@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import type { Batch, Order, FieldValidation, Address } from '@fc/shared'
 import { uploadBatch } from '@/lib/api'
 import { AiStatusBadge, ValidationStatusBadge } from '../components/StatusBadge'
 import MapPreview from '../components/MapPreview'
 
 type Tab = 'upload' | 'extraction' | 'geolocation'
+const STORAGE_KEY = 'fc-current-batch'
 
 export default function NewBatchClient() {
   const [tab, setTab] = useState<Tab>('upload')
@@ -16,7 +17,37 @@ export default function NewBatchClient() {
   const [error, setError] = useState<string | null>(null)
   const [batch, setBatch] = useState<(Batch & { orders: Order[] }) | null>(null)
   const [selectedOrderIdx, setSelectedOrderIdx] = useState(0)
+  const [showRaw, setShowRaw] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Restore batch from localStorage on first mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        setBatch(parsed)
+        setTab('extraction')
+      }
+    } catch {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }, [])
+
+  const saveBatch = (b: Batch & { orders: Order[] }) => {
+    setBatch(b)
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(b)) } catch { /* quota */ }
+  }
+
+  const clearBatch = () => {
+    setBatch(null)
+    setFile(null)
+    setError(null)
+    setSelectedOrderIdx(0)
+    setShowRaw(false)
+    setTab('upload')
+    localStorage.removeItem(STORAGE_KEY)
+  }
 
   const handleFile = (f: File) => {
     if (!/\.(eml|msg)$/i.test(f.name)) {
@@ -40,9 +71,11 @@ export default function NewBatchClient() {
     setError(null)
     try {
       const result = await uploadBatch(file)
-      setBatch(result)
+      saveBatch(result)
       setSelectedOrderIdx(0)
+      setShowRaw(false)
       setTab('extraction')
+      console.log('[UI] full batch response:', JSON.stringify(result, null, 2))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด')
     } finally {
@@ -51,15 +84,27 @@ export default function NewBatchClient() {
   }
 
   const selectedOrder = batch?.orders?.[selectedOrderIdx]
-  const address: Address | undefined = (selectedOrder as Order & { addresses?: Address })?.addresses ?? (selectedOrder as Order & { address?: Address })?.address
-  const fieldValidations: FieldValidation[] = (selectedOrder as Order & { field_validations?: FieldValidation[] })?.field_validations ?? []
 
-  const customerFields = fieldValidations.filter((f) =>
-    ['customer_name', 'company_name', 'circuit_order_type', 'old_circuit', 'product_package', 'speed', 'store_code', 'branch_name', 'coordinator_name', 'coordinator_phone'].includes(f.field_name)
-  )
-  const addressFields = fieldValidations.filter((f) =>
-    ['house_no', 'moo', 'building', 'floor', 'room', 'soi', 'road', 'subdistrict', 'district', 'province', 'postcode', 'latitude', 'longitude'].includes(f.field_name)
-  )
+  // Supabase join returns addresses as an array even for 1-to-1
+  const rawAddr = (selectedOrder as Order & { addresses?: Address | Address[] })?.addresses
+  const address: Address | undefined = Array.isArray(rawAddr) ? rawAddr[0] : rawAddr
+
+  // field_validations is always an array from the join
+  const rawFv = (selectedOrder as Order & { field_validations?: FieldValidation[] })?.field_validations
+  const fieldValidations: FieldValidation[] = Array.isArray(rawFv) ? rawFv : []
+
+  // Log whenever selected order changes so we can inspect in DevTools
+  useEffect(() => {
+    if (selectedOrder) {
+      console.log('[UI] selectedOrder:', JSON.stringify(selectedOrder, null, 2))
+      console.log('[UI] address:', JSON.stringify(address, null, 2))
+      console.log('[UI] fieldValidations:', JSON.stringify(fieldValidations, null, 2))
+    }
+  }, [selectedOrder])
+
+  const ADDRESS_FIELD_NAMES = new Set(['house_no','moo','building','floor','room','soi','road','subdistrict','district','province','postcode','latitude','longitude'])
+  const customerFields = fieldValidations.filter((f) => !ADDRESS_FIELD_NAMES.has(f.field_name))
+  const addressFields = fieldValidations.filter((f) => ADDRESS_FIELD_NAMES.has(f.field_name))
 
   const FIELD_LABELS: Record<string, string> = {
     customer_name: 'ชื่อลูกค้า', company_name: 'บริษัท', circuit_order_type: 'ประเภทวงจร',
@@ -73,9 +118,28 @@ export default function NewBatchClient() {
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900">New Batch</h1>
-        <p className="text-sm text-gray-500 mt-1">อัปโหลดอีเมลคำสั่งติดตั้งและให้ AI วิเคราะห์ที่อยู่</p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">New Batch</h1>
+          <p className="text-sm text-gray-500 mt-1">อัปโหลดอีเมลคำสั่งติดตั้งและให้ AI วิเคราะห์ที่อยู่</p>
+          {batch && (
+            <p className="text-xs text-gray-400 mt-1">
+              Batch: <span className="font-mono">{batch.batch_code}</span>
+              {' · '}{batch.orders.length} คำสั่ง
+            </p>
+          )}
+        </div>
+        {batch && (
+          <button
+            onClick={clearBatch}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-sm text-gray-500 hover:border-red-300 hover:text-red-600 hover:bg-red-50 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" transform="rotate(45 12 12)" />
+            </svg>
+            เริ่ม Batch ใหม่
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -258,12 +322,30 @@ export default function NewBatchClient() {
                 </table>
               </div>
 
-              <button
-                onClick={() => setTab('geolocation')}
-                className="text-sm font-medium text-[#185FA5] hover:underline"
-              >
-                ดูที่อยู่และพิกัด →
-              </button>
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  onClick={() => setTab('geolocation')}
+                  className="text-sm font-medium text-[#185FA5] hover:underline"
+                >
+                  ดูที่อยู่และพิกัด →
+                </button>
+                <button
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-2 py-1"
+                >
+                  {showRaw ? 'ซ่อน' : 'ดู'} Raw Extraction
+                </button>
+              </div>
+
+              {/* Raw extraction debug panel */}
+              {showRaw && selectedOrder && (
+                <div className="bg-gray-900 rounded-xl p-4 overflow-auto max-h-96">
+                  <p className="text-xs text-gray-400 mb-2 font-mono">Raw API response — order {selectedOrderIdx + 1}</p>
+                  <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
+                    {JSON.stringify(selectedOrder, null, 2)}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -296,29 +378,59 @@ export default function NewBatchClient() {
               {/* Address fields */}
               <div className="space-y-4">
                 <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-700">ที่อยู่ติดตั้ง</h3>
-                  {address ? (
-                    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                      {[
-                        ['บ้านเลขที่', address.house_no],
-                        ['หมู่ที่', address.moo],
-                        ['อาคาร', address.building],
-                        ['ชั้น', address.floor],
-                        ['ห้อง', address.room],
-                        ['ซอย', address.soi],
-                        ['ถนน', address.road],
-                        ['แขวง/ตำบล', address.subdistrict],
-                        ['เขต/อำเภอ', address.district],
-                        ['จังหวัด', address.province],
-                        ['รหัสไปรษณีย์', address.postcode],
-                      ].map(([label, value]) => (
-                        <div key={label as string}>
-                          <dt className="text-xs text-gray-400">{label}</dt>
-                          <dd className="font-medium text-gray-900">{value ?? '—'}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  ) : (
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-gray-700">ที่อยู่ติดตั้ง</h3>
+                    <span className="text-xs text-gray-400 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />แนะนำโดย AI
+                    </span>
+                  </div>
+                  {address ? (() => {
+                    // Build a lookup of field_name → validation for status indicators
+                    const fieldMap = Object.fromEntries(
+                      fieldValidations.map((f) => [f.field_name, f])
+                    )
+                    const addrFields: [string, string, string | null][] = [
+                      ['บ้านเลขที่', 'house_no', address.house_no],
+                      ['หมู่ที่', 'moo', address.moo],
+                      ['อาคาร', 'building', address.building],
+                      ['ชั้น', 'floor', address.floor],
+                      ['ห้อง', 'room', address.room],
+                      ['ซอย', 'soi', address.soi],
+                      ['ถนน', 'road', address.road],
+                      ['แขวง/ตำบล', 'subdistrict', address.subdistrict],
+                      ['เขต/อำเภอ', 'district', address.district],
+                      ['จังหวัด', 'province', address.province],
+                      ['รหัสไปรษณีย์', 'postcode', address.postcode],
+                    ]
+                    return (
+                      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                        {addrFields.map(([label, key, value]) => {
+                          const v = fieldMap[key]
+                          const isSuggested = v?.status === 'suggested'
+                          const isSuspicious = v?.status === 'suspicious' || v?.status === 'incorrect'
+                          return (
+                            <div key={key}>
+                              <dt className="text-xs text-gray-400 mb-0.5">{label}</dt>
+                              <dd className="flex items-start gap-1.5">
+                                <span className={`font-medium ${value ? 'text-gray-900' : 'text-gray-300'}`}>
+                                  {value ?? '—'}
+                                </span>
+                                {value && isSuggested && (
+                                  <span title={v?.ai_note ?? 'อนุมานโดย AI'} className="mt-0.5 w-2 h-2 rounded-full bg-blue-400 flex-shrink-0 cursor-help" />
+                                )}
+                                {value && isSuspicious && (
+                                  <span title={v?.ai_note ?? 'น่าสงสัย'} className="mt-0.5 w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0 cursor-help" />
+                                )}
+                              </dd>
+                              {v?.ai_note && (isSuggested || isSuspicious) && (
+                                <p className="text-xs text-gray-400 mt-0.5 leading-tight">{v.ai_note}</p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </dl>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-400">ไม่มีข้อมูลที่อยู่</p>
                   )}
                 </div>

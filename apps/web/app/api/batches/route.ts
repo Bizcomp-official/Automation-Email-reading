@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/services/supabase'
 import { parseEmailBuffer } from '@/lib/services/emailParser'
 import { extractOrdersFromEmail } from '@/lib/services/claude'
-import type { ClaudeOrder } from '@fc/shared'
+import type { ClaudeOrder, ClaudeFieldValidation, ValidationStatus } from '@fc/shared'
 
 function generateBatchCode(): string {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
@@ -12,12 +12,94 @@ function generateBatchCode(): string {
   return `FC-${date}-${seq}`
 }
 
+// All fields we want shown in the UI, in display order
+const ORDER_FIELDS: { key: keyof ClaudeOrder; label: string }[] = [
+  { key: 'customer_name',      label: 'ชื่อลูกค้า' },
+  { key: 'company_name',       label: 'บริษัท' },
+  { key: 'circuit_order_type', label: 'ประเภทวงจร' },
+  { key: 'old_circuit',        label: 'วงจรเดิม' },
+  { key: 'product_package',    label: 'แพ็คเกจ' },
+  { key: 'speed',              label: 'ความเร็ว' },
+  { key: 'store_code',         label: 'รหัสสาขา' },
+  { key: 'branch_name',        label: 'ชื่อสาขา' },
+  { key: 'coordinator_name',   label: 'ผู้ประสานงาน' },
+  { key: 'coordinator_phone',  label: 'เบอร์ติดต่อ' },
+]
+
+const ADDRESS_FIELDS: { key: string; label: string }[] = [
+  { key: 'house_no',    label: 'บ้านเลขที่' },
+  { key: 'moo',         label: 'หมู่ที่' },
+  { key: 'building',    label: 'อาคาร' },
+  { key: 'floor',       label: 'ชั้น' },
+  { key: 'room',        label: 'ห้อง' },
+  { key: 'soi',         label: 'ซอย' },
+  { key: 'road',        label: 'ถนน' },
+  { key: 'subdistrict', label: 'แขวง/ตำบล' },
+  { key: 'district',    label: 'เขต/อำเภอ' },
+  { key: 'province',    label: 'จังหวัด' },
+  { key: 'postcode',    label: 'รหัสไปรษณีย์' },
+  { key: 'latitude',    label: 'ละติจูด' },
+  { key: 'longitude',   label: 'ลองจิจูด' },
+]
+
+/**
+ * Merge Claude's explicit field validations with auto-generated rows for
+ * every field that Claude found but didn't validate, and every null field.
+ * This guarantees the extraction table always shows the full picture.
+ */
+function buildCompleteValidations(o: ClaudeOrder): ClaudeFieldValidation[] {
+  // Index Claude's explicit validations by field name (last one wins on duplicates)
+  const explicit = new Map<string, ClaudeFieldValidation>()
+  for (const f of o.fields ?? []) {
+    explicit.set(f.field_name, f)
+  }
+
+  const result: ClaudeFieldValidation[] = []
+
+  // Order-level fields
+  for (const { key } of ORDER_FIELDS) {
+    if (explicit.has(key)) {
+      result.push(explicit.get(key)!)
+      continue
+    }
+    const raw = o[key]
+    const value = raw != null ? String(raw) : undefined
+    result.push({
+      field_name: key,
+      value: value ?? '',
+      status: (value ? 'correct' : 'missing') as ValidationStatus,
+      ai_note: value ? '' : 'ไม่พบข้อมูลในอีเมลหรือไฟล์แนบ',
+      confidence: value ? 0.9 : 0,
+    })
+  }
+
+  // Address fields
+  for (const { key } of ADDRESS_FIELDS) {
+    if (explicit.has(key)) {
+      result.push(explicit.get(key)!)
+      continue
+    }
+    const raw = o.address?.[key as keyof typeof o.address]
+    const value = raw != null ? String(raw) : undefined
+    result.push({
+      field_name: key,
+      value: value ?? '',
+      status: (value ? 'correct' : 'missing') as ValidationStatus,
+      ai_note: value ? '' : 'ไม่พบข้อมูลในอีเมลหรือไฟล์แนบ',
+      confidence: value ? 0.9 : 0,
+    })
+  }
+
+  return result
+}
+
 export async function POST(req: NextRequest) {
   let formData: FormData
   try {
     formData = await req.formData()
-  } catch {
-    return NextResponse.json({ error: 'Invalid multipart form data' }, { status: 400 })
+  } catch (err) {
+    console.error('[batches] formData parse error:', err)
+    return NextResponse.json({ error: 'Invalid multipart form data', detail: String(err) }, { status: 400 })
   }
 
   const file = formData.get('email')
@@ -35,8 +117,11 @@ export async function POST(req: NextRequest) {
   try {
     parsed = await parseEmailBuffer(buffer)
   } catch (err) {
+    console.error('[batches] email parse error:', err)
     return NextResponse.json({ error: 'Failed to parse email', detail: String(err) }, { status: 422 })
   }
+
+  console.log('[batches] parsed — subject:', parsed.subject, '| bodyLen:', parsed.bodyText.length, '| excelRows:', parsed.rawExcelRows.length)
 
   const batchCode = generateBatchCode()
   const { data: batch, error: batchErr } = await supabase
@@ -53,12 +138,13 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (batchErr || !batch) {
+    console.error('[batches] Supabase insert error:', batchErr)
     return NextResponse.json({ error: 'Failed to create batch', detail: batchErr?.message }, { status: 500 })
   }
 
   let extraction
   try {
-    extraction = await extractOrdersFromEmail(parsed.bodyText, parsed.excelTable)
+    extraction = await extractOrdersFromEmail(parsed.bodyText, parsed.excelRows)
   } catch (err) {
     await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
     return NextResponse.json({ error: 'Claude extraction failed', detail: String(err) }, { status: 502 })
@@ -84,12 +170,18 @@ export async function POST(req: NextRequest) {
         coordinator_name: o.coordinator_name ?? null,
         coordinator_phone: o.coordinator_phone ?? null,
         source_ref: o.source_ref ?? null,
-        ai_status: o.ai_status,
+        // 'suggested' is only valid for field-level status, not the order overall
+        ai_status: (['correct','missing','suspicious','incorrect'] as string[]).includes(o.ai_status)
+          ? o.ai_status
+          : 'suspicious',
       })
       .select()
       .single()
 
-    if (orderErr || !order) continue
+    if (orderErr || !order) {
+      console.error('[batches] order insert error:', orderErr)
+      continue
+    }
 
     await supabase.from('addresses').insert({
       order_id: order.id,
@@ -110,18 +202,18 @@ export async function POST(req: NextRequest) {
       geocode_confidence: null,
     })
 
-    if (o.fields?.length) {
-      await supabase.from('field_validations').insert(
-        o.fields.map((f) => ({
-          order_id: order.id,
-          field_name: f.field_name,
-          value: f.value ?? null,
-          status: f.status,
-          ai_note: f.ai_note ?? null,
-          confidence: f.confidence ?? null,
-        })),
-      )
-    }
+    // Build complete validations — every field gets a row
+    const allValidations = buildCompleteValidations(o)
+    await supabase.from('field_validations').insert(
+      allValidations.map((f) => ({
+        order_id: order.id,
+        field_name: f.field_name,
+        value: f.value ?? null,
+        status: f.status,
+        ai_note: f.ai_note ?? null,
+        confidence: f.confidence ?? null,
+      })),
+    )
 
     await supabase.from('reviews').insert({
       order_id: order.id,
@@ -131,10 +223,20 @@ export async function POST(req: NextRequest) {
       reviewed_at: null,
     })
 
-    createdOrders.push(order)
+    createdOrders.push(order.id)
   }
 
   await supabase.from('batches').update({ status: 'done' }).eq('id', batch.id)
 
-  return NextResponse.json({ batch: { ...batch, status: 'done' }, orders: createdOrders }, { status: 201 })
+  // Re-fetch with all joins so the frontend gets addresses + field_validations immediately
+  const { data: fullOrders } = await supabase
+    .from('orders')
+    .select('*, addresses(*), field_validations(*), reviews(*)')
+    .eq('batch_id', batch.id)
+    .order('seq')
+
+  return NextResponse.json(
+    { batch: { ...batch, status: 'done' }, orders: fullOrders ?? [] },
+    { status: 201 },
+  )
 }

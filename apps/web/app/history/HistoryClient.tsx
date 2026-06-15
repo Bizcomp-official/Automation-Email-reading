@@ -1,17 +1,56 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import type { OrderListItem, Order, Address, ReviewStatus } from '@fc/shared'
+import type { OrderListItem, Order, Address, FieldValidation, ReviewStatus } from '@fc/shared'
 import { listOrders, getOrder, reviewOrder } from '@/lib/api'
-import { AiStatusBadge, ReviewStatusBadge } from '../components/StatusBadge'
+import { AiStatusBadge, ReviewStatusBadge, ValidationStatusBadge } from '../components/StatusBadge'
 import MapPreview from '../components/MapPreview'
 
-const STATUS_FILTERS: { value: string; label: string }[] = [
-  { value: 'all', label: 'ทั้งหมด' },
-  { value: 'pending', label: 'รอตรวจ' },
+const STATUS_FILTERS = [
+  { value: 'all',      label: 'ทั้งหมด' },
+  { value: 'pending',  label: 'รอตรวจ' },
   { value: 'verified', label: 'ยืนยันแล้ว' },
-  { value: 'flagged', label: 'ต้องแก้' },
+  { value: 'flagged',  label: 'ต้องแก้' },
 ]
+
+// Supabase joins always return arrays — unwrap to single item
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function first<T>(v: T | T[] | null | undefined): T | undefined {
+  if (v == null) return undefined
+  return Array.isArray(v) ? v[0] : v
+}
+
+const ADDRESS_ROWS: [string, keyof Address][] = [
+  ['บ้านเลขที่',  'house_no'],
+  ['หมู่ที่',     'moo'],
+  ['อาคาร',      'building'],
+  ['ชั้น',       'floor'],
+  ['ห้อง',       'room'],
+  ['ซอย',        'soi'],
+  ['ถนน',        'road'],
+  ['แขวง/ตำบล',  'subdistrict'],
+  ['เขต/อำเภอ',  'district'],
+  ['จังหวัด',    'province'],
+  ['รหัสไปรษณีย์','postcode'],
+]
+
+const FIELD_LABELS: Record<string, string> = {
+  customer_name: 'ชื่อลูกค้า', company_name: 'บริษัท',
+  circuit_order_type: 'ประเภทวงจร', old_circuit: 'วงจรเดิม',
+  product_package: 'แพ็คเกจ', speed: 'ความเร็ว',
+  store_code: 'รหัสสาขา', branch_name: 'ชื่อสาขา',
+  coordinator_name: 'ผู้ประสานงาน', coordinator_phone: 'เบอร์ติดต่อ',
+  house_no: 'บ้านเลขที่', moo: 'หมู่ที่', building: 'อาคาร',
+  floor: 'ชั้น', room: 'ห้อง', soi: 'ซอย', road: 'ถนน',
+  subdistrict: 'แขวง/ตำบล', district: 'เขต/อำเภอ',
+  province: 'จังหวัด', postcode: 'รหัสไปรษณีย์',
+  latitude: 'ละติจูด', longitude: 'ลองจิจูด',
+}
+
+const ADDRESS_FIELD_NAMES = new Set([
+  'house_no','moo','building','floor','room','soi','road',
+  'subdistrict','district','province','postcode','latitude','longitude',
+])
 
 export default function HistoryClient() {
   const [q, setQ] = useState('')
@@ -20,14 +59,16 @@ export default function HistoryClient() {
   const [rows, setRows] = useState<OrderListItem[]>([])
   const [count, setCount] = useState(0)
   const [loading, setLoading] = useState(true)
+
   const [drawerOrderId, setDrawerOrderId] = useState<string | null>(null)
-  const [drawerOrder, setDrawerOrder] = useState<(Order & { addresses?: Address; address?: Address }) | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [drawerOrder, setDrawerOrder] = useState<any | null>(null)
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [reviewNote, setReviewNote] = useState('')
   const [reviewLoading, setReviewLoading] = useState(false)
   const [reviewSuccess, setReviewSuccess] = useState<string | null>(null)
+  const [drawerTab, setDrawerTab] = useState<'address' | 'fields'>('address')
 
-  // Debounce search
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q), 300)
     return () => clearTimeout(t)
@@ -36,14 +77,14 @@ export default function HistoryClient() {
   const fetchOrders = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await listOrders({ q: debouncedQ || undefined, status: status !== 'all' ? status : undefined })
+      const res = await listOrders({
+        q: debouncedQ || undefined,
+        status: status !== 'all' ? status : undefined,
+      })
       setRows(res.data)
       setCount(res.count)
-    } catch {
-      // keep stale data
-    } finally {
-      setLoading(false)
-    }
+    } catch { /* keep stale */ }
+    finally { setLoading(false) }
   }, [debouncedQ, status])
 
   useEffect(() => { fetchOrders() }, [fetchOrders])
@@ -54,19 +95,18 @@ export default function HistoryClient() {
     setDrawerLoading(true)
     setReviewNote('')
     setReviewSuccess(null)
+    setDrawerTab('address')
     try {
-      const o = await getOrder(id) as Order & { addresses?: Address; address?: Address; reviews?: { note?: string } }
+      const o = await getOrder(id)
       setDrawerOrder(o)
-      setReviewNote((o as { reviews?: { note?: string } }).reviews?.note ?? '')
+      const rev = first((o as Order & { reviews?: unknown }).reviews as { note?: string } | { note?: string }[])
+      setReviewNote(rev?.note ?? '')
     } finally {
       setDrawerLoading(false)
     }
   }
 
-  const closeDrawer = () => {
-    setDrawerOrderId(null)
-    setDrawerOrder(null)
-  }
+  const closeDrawer = () => { setDrawerOrderId(null); setDrawerOrder(null) }
 
   const handleReview = async (is_status: ReviewStatus) => {
     if (!drawerOrderId) return
@@ -76,13 +116,17 @@ export default function HistoryClient() {
       await reviewOrder(drawerOrderId, { is_status, note: reviewNote })
       setReviewSuccess(is_status === 'verified' ? 'ยืนยันเรียบร้อย' : 'บันทึกว่าต้องแก้ไข')
       fetchOrders()
-    } finally {
-      setReviewLoading(false)
-    }
+    } finally { setReviewLoading(false) }
   }
 
-  const drawerAddress = drawerOrder?.addresses ?? drawerOrder?.address
-  const drawerReview = (drawerOrder as Order & { reviews?: { is_status?: ReviewStatus; note?: string } })?.reviews
+  // Unwrap Supabase join arrays
+  const drawerAddress: Address | undefined = first(drawerOrder?.addresses)
+  const drawerReview: { is_status?: ReviewStatus; note?: string } | undefined = first(drawerOrder?.reviews)
+  const drawerValidations: FieldValidation[] = Array.isArray(drawerOrder?.field_validations)
+    ? drawerOrder.field_validations
+    : []
+  const customerValidations = drawerValidations.filter((f) => !ADDRESS_FIELD_NAMES.has(f.field_name))
+  const addressValidations  = drawerValidations.filter((f) => ADDRESS_FIELD_NAMES.has(f.field_name))
 
   return (
     <div className="p-8">
@@ -99,7 +143,7 @@ export default function HistoryClient() {
           </svg>
           <input
             type="text"
-            placeholder="ค้นหาชื่อลูกค้า, บริษัท, ที่อยู่..."
+            placeholder="ค้นหาชื่อลูกค้า, บริษัท..."
             value={q}
             onChange={(e) => setQ(e.target.value)}
             className="w-full pl-9 pr-4 py-2 rounded-lg border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5] focus:border-transparent"
@@ -111,9 +155,7 @@ export default function HistoryClient() {
               key={f.value}
               onClick={() => setStatus(f.value)}
               className={`px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors ${
-                status === f.value
-                  ? 'text-white border-[#185FA5]'
-                  : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                status === f.value ? 'text-white border-[#185FA5]' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
               }`}
               style={status === f.value ? { backgroundColor: '#185FA5' } : {}}
             >
@@ -143,11 +185,7 @@ export default function HistoryClient() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={() => openDrawer(row.id)}
-                  className="hover:bg-gray-50 cursor-pointer transition-colors"
-                >
+                <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.batch_code}</td>
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
@@ -169,81 +207,165 @@ export default function HistoryClient() {
       {/* Drawer */}
       {drawerOrderId && (
         <>
-          <div
-            className="fixed inset-0 bg-black/30 z-40"
-            onClick={closeDrawer}
-          />
-          <aside className="fixed right-0 top-0 bottom-0 w-full max-w-lg bg-white shadow-2xl z-50 flex flex-col overflow-hidden">
-            {/* Drawer header */}
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={closeDrawer} />
+          <aside className="fixed right-0 top-0 bottom-0 w-full max-w-xl bg-white shadow-2xl z-50 flex flex-col overflow-hidden">
+
+            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200" style={{ backgroundColor: '#185FA5' }}>
               <div>
-                <h2 className="font-semibold text-white text-sm">
-                  {drawerOrder?.customer_name ?? 'รายละเอียดคำสั่ง'}
-                </h2>
-                {drawerOrder?.company_name && (
-                  <p className="text-xs text-blue-200 mt-0.5">{drawerOrder.company_name}</p>
+                <h2 className="font-semibold text-white">{drawerOrder?.customer_name ?? 'รายละเอียดคำสั่ง'}</h2>
+                {drawerOrder?.company_name && <p className="text-xs text-blue-200 mt-0.5">{drawerOrder.company_name}</p>}
+                {drawerOrder && (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <AiStatusBadge status={drawerOrder.ai_status} />
+                    {drawerReview?.is_status && <ReviewStatusBadge status={drawerReview.is_status} />}
+                  </div>
                 )}
               </div>
-              <button onClick={closeDrawer} className="text-white opacity-70 hover:opacity-100 transition">
+              <button onClick={closeDrawer} className="text-white opacity-70 hover:opacity-100 transition ml-4 flex-shrink-0">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
+            {/* Drawer tabs */}
+            {!drawerLoading && drawerOrder && (
+              <div className="flex border-b border-gray-200 px-5 gap-4">
+                {(['address', 'fields'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setDrawerTab(t)}
+                    className={`py-2.5 text-xs font-medium border-b-2 transition-colors -mb-px ${
+                      drawerTab === t ? 'border-[#185FA5] text-[#185FA5]' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {t === 'address' ? 'ที่อยู่และแผนที่' : 'ข้อมูลทั้งหมด'}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {drawerLoading ? (
               <div className="flex-1 flex items-center justify-center text-sm text-gray-400">กำลังโหลด...</div>
             ) : drawerOrder ? (
-              <div className="flex-1 overflow-y-auto p-5 space-y-5">
-                {/* Status row */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  <AiStatusBadge status={drawerOrder.ai_status} />
-                  {drawerReview?.is_status && <ReviewStatusBadge status={drawerReview.is_status} />}
-                </div>
+              <div className="flex-1 overflow-y-auto">
 
-                {/* Address */}
-                {drawerAddress && (
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-2">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ที่อยู่ติดตั้ง</h3>
-                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-                      {[
-                        ['บ้านเลขที่', drawerAddress.house_no],
-                        ['หมู่ที่', drawerAddress.moo],
-                        ['อาคาร', drawerAddress.building],
-                        ['ชั้น', drawerAddress.floor],
-                        ['ซอย', drawerAddress.soi],
-                        ['ถนน', drawerAddress.road],
-                        ['แขวง/ตำบล', drawerAddress.subdistrict],
-                        ['เขต/อำเภอ', drawerAddress.district],
-                        ['จังหวัด', drawerAddress.province],
-                        ['รหัสไปรษณีย์', drawerAddress.postcode],
-                      ].map(([label, value]) => (
-                        <div key={label as string}>
-                          <dt className="text-xs text-gray-400">{label}</dt>
-                          <dd className="font-medium text-gray-800">{value ?? '—'}</dd>
+                {/* ── Address tab ── */}
+                {drawerTab === 'address' && (
+                  <div className="p-5 space-y-4">
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">ที่อยู่ติดตั้ง</h3>
+                      {drawerAddress ? (
+                        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                          {ADDRESS_ROWS.map(([label, key]) => {
+                            const val = drawerAddress[key]
+                            const validation = addressValidations.find((f) => f.field_name === key)
+                            return (
+                              <div key={key}>
+                                <dt className="text-xs text-gray-400 mb-0.5">{label}</dt>
+                                <dd className="flex items-start gap-1">
+                                  <span className={`font-medium ${val ? 'text-gray-900' : 'text-gray-300'}`}>
+                                    {val ?? '—'}
+                                  </span>
+                                  {validation && validation.status !== 'correct' && validation.status !== 'missing' && (
+                                    <ValidationStatusBadge status={validation.status} />
+                                  )}
+                                </dd>
+                                {validation?.ai_note && validation.status !== 'correct' && (
+                                  <p className="text-xs text-amber-600 mt-0.5 leading-snug">{validation.ai_note}</p>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </dl>
+                      ) : (
+                        <p className="text-sm text-gray-400">ไม่มีข้อมูลที่อยู่</p>
+                      )}
+                    </div>
+
+                    {/* GPS */}
+                    {drawerAddress && (drawerAddress.latitude || drawerAddress.longitude) && (
+                      <div className="bg-gray-50 rounded-xl p-4">
+                        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">พิกัด GPS</h3>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <dt className="text-xs text-gray-400">ละติจูด</dt>
+                            <dd className="font-mono font-medium text-gray-900">{drawerAddress.latitude ?? '—'}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs text-gray-400">ลองจิจูด</dt>
+                            <dd className="font-mono font-medium text-gray-900">{drawerAddress.longitude ?? '—'}</dd>
+                          </div>
                         </div>
-                      ))}
-                    </dl>
+                      </div>
+                    )}
+
+                    {/* Map */}
+                    {drawerAddress?.latitude && drawerAddress?.longitude && (
+                      <MapPreview lat={drawerAddress.latitude} lng={drawerAddress.longitude} />
+                    )}
                   </div>
                 )}
 
-                {/* Map */}
-                {drawerAddress?.latitude && drawerAddress?.longitude && (
-                  <MapPreview lat={drawerAddress.latitude} lng={drawerAddress.longitude} />
+                {/* ── All fields tab ── */}
+                {drawerTab === 'fields' && (
+                  <div className="p-5 space-y-4">
+                    {/* Customer / circuit fields */}
+                    {customerValidations.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                        <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+                          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ข้อมูลลูกค้า / วงจร</h3>
+                        </div>
+                        <table className="w-full text-sm">
+                          <tbody className="divide-y divide-gray-50">
+                            {customerValidations.map((f) => (
+                              <tr key={f.id}>
+                                <td className="px-4 py-2.5 text-xs text-gray-500 w-32 shrink-0">
+                                  {FIELD_LABELS[f.field_name] ?? f.field_name}
+                                </td>
+                                <td className="px-4 py-2.5 font-medium text-gray-900">
+                                  {f.value ?? <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <ValidationStatusBadge status={f.status} />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Address fields */}
+                    {addressValidations.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                        <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+                          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ที่อยู่</h3>
+                        </div>
+                        <table className="w-full text-sm">
+                          <tbody className="divide-y divide-gray-50">
+                            {addressValidations.map((f) => (
+                              <tr key={f.id}>
+                                <td className="px-4 py-2.5 text-xs text-gray-500 w-32 shrink-0">
+                                  {FIELD_LABELS[f.field_name] ?? f.field_name}
+                                </td>
+                                <td className="px-4 py-2.5 font-medium text-gray-900">
+                                  {f.value ?? <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-4 py-2.5"><ValidationStatusBadge status={f.status} /></td>
+                                <td className="px-4 py-2.5 text-xs text-amber-600 max-w-[160px]">{f.ai_note || ''}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 )}
 
-                {/* AI note from field_validations */}
-                {(drawerOrder as Order & { field_validations?: { ai_note?: string; status: string }[] }).field_validations
-                  ?.filter((f) => f.ai_note && f.status !== 'correct')
-                  .slice(0, 3)
-                  .map((f, i) => (
-                    <div key={i} className="bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs text-yellow-800">
-                      {f.ai_note}
-                    </div>
-                  ))}
-
-                {/* Review */}
-                <div className="space-y-2">
+                {/* Review note — always visible at bottom of scroll */}
+                <div className="px-5 pb-4 space-y-2">
                   <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">หมายเหตุการตรวจ</label>
                   <textarea
                     value={reviewNote}
@@ -252,17 +374,16 @@ export default function HistoryClient() {
                     placeholder="บันทึกหมายเหตุ (ถ้ามี)..."
                     className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                   />
+                  {reviewSuccess && (
+                    <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800">
+                      {reviewSuccess}
+                    </div>
+                  )}
                 </div>
-
-                {reviewSuccess && (
-                  <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800">
-                    {reviewSuccess}
-                  </div>
-                )}
               </div>
             ) : null}
 
-            {/* Drawer footer actions */}
+            {/* Footer actions */}
             {drawerOrder && (
               <div className="border-t border-gray-200 px-5 py-4 flex gap-3">
                 <button

@@ -41,7 +41,8 @@ export async function GET(req: NextRequest) {
   const { data, count, error } = await query
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[orders] Supabase query error:', error)
+    return NextResponse.json({ error: error.message, code: error.code }, { status: 500 })
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
