@@ -78,9 +78,6 @@ export async function extractOrdersFromEmail(
     .map((b) => (b as { type: 'text'; text: string }).text)
     .join('')
 
-  // Strip any accidental markdown fences
   const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
-
-  const result = JSON.parse(cleaned) as ClaudeExtractionResult
-  return result
+  return JSON.parse(cleaned) as ClaudeExtractionResult
 }

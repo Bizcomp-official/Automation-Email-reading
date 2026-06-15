@@ -6,7 +6,9 @@ import type {
   ReviewStatus,
 } from '@fc/shared'
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
+// In production (Vercel) this is '' so all calls go to /api/...
+// In local dev you can override with NEXT_PUBLIC_API_URL if running a separate server
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? ''
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -23,6 +25,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export async function uploadBatch(file: File): Promise<Batch & { orders: Order[] }> {
   const form = new FormData()
   form.append('email', file)
+  // No Content-Type header — browser sets it with boundary for multipart
   const res = await fetch(`${BASE}/api/batches`, { method: 'POST', body: form })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))

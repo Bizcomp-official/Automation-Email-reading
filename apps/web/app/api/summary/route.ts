@@ -1,17 +1,16 @@
-import { Router } from 'express'
-import { supabase } from '../services/supabase'
+export const runtime = 'nodejs'
 
-export const summaryRouter = Router()
+import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/services/supabase'
 
-summaryRouter.get('/', async (_req, res) => {
+export async function GET() {
   const [reviewsResult, confidenceResult] = await Promise.all([
     supabase.from('reviews').select('is_status'),
     supabase.from('field_validations').select('confidence'),
   ])
 
   if (reviewsResult.error || confidenceResult.error) {
-    res.status(500).json({ error: 'Failed to fetch summary' })
-    return
+    return NextResponse.json({ error: 'Failed to fetch summary' }, { status: 500 })
   }
 
   const reviews = reviewsResult.data ?? []
@@ -29,5 +28,5 @@ summaryRouter.get('/', async (_req, res) => {
       ? Math.round((confidences.reduce((a, b) => a + b, 0) / confidences.length) * 100) / 100
       : null
 
-  res.json({ total, verified, pending, flagged, avg_confidence })
-})
+  return NextResponse.json({ total, verified, pending, flagged, avg_confidence })
+}

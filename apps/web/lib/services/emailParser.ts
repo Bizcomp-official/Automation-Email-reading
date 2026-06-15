@@ -9,9 +9,7 @@ export interface ParsedEmail {
   excelTable: string
 }
 
-export async function parseEmailFile(buffer: Buffer, mimetype: string): Promise<ParsedEmail> {
-  // For .msg files we fall back to treating the buffer as raw text for now
-  // Full .msg support would need a separate library (e.g. @kenjiuno/msgreader)
+export async function parseEmailBuffer(buffer: Buffer): Promise<ParsedEmail> {
   const parsed = await simpleParser(buffer)
 
   const subject = parsed.subject ?? ''
@@ -20,7 +18,6 @@ export async function parseEmailFile(buffer: Buffer, mimetype: string): Promise<
   const bodyText = parsed.text ?? ''
 
   let excelTable = ''
-
   for (const attachment of parsed.attachments ?? []) {
     const name = attachment.filename?.toLowerCase() ?? ''
     if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
@@ -39,7 +36,6 @@ export function parseExcelBuffer(buffer: Buffer): string {
 
   const sheet = workbook.Sheets[sheetName]
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-
   if (rows.length === 0) return ''
 
   const headers = Object.keys(rows[0])
