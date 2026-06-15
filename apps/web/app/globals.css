@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+:root {
+  --true-blue: #185FA5;
+  --true-blue-dark: #124a82;
+  --true-blue-light: #e8f0fb;
+}
+
+@theme inline {
+  --color-true-blue: #185FA5;
+  --color-true-blue-dark: #124a82;
+  --color-true-blue-light: #e8f0fb;
+}
+
+body {
+  font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif;
+  background: #f5f7fa;
+  color: #1a2332;
+}
