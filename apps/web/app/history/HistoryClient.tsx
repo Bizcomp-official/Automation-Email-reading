@@ -20,6 +20,23 @@ function first<T>(v: T | T[] | null | undefined): T | undefined {
   return Array.isArray(v) ? v[0] : v
 }
 
+function formatDateTime(iso: string): string {
+  const d = new Date(iso)
+  const date = d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' })
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return `${date} ${time}`
+}
+
+function groupBySender(rows: OrderListItem[]): { sender: string; items: OrderListItem[] }[] {
+  const map = new Map<string, OrderListItem[]>()
+  for (const row of rows) {
+    const key = row.email_from ?? 'ไม่ระบุผู้ส่ง'
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(row)
+  }
+  return Array.from(map.entries()).map(([sender, items]) => ({ sender, items }))
+}
+
 const ADDRESS_ROWS: [string, keyof Address][] = [
   ['บ้านเลขที่',  'house_no'],
   ['หมู่ที่',     'moo'],
@@ -165,44 +182,56 @@ export default function HistoryClient() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {loading ? (
-          <div className="p-12 text-center text-sm text-gray-400">กำลังโหลด...</div>
-        ) : rows.length === 0 ? (
-          <div className="p-12 text-center text-sm text-gray-400">ไม่พบรายการ</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr className="text-xs text-gray-500">
-                <th className="text-left px-4 py-3 font-medium">Batch</th>
-                <th className="text-left px-4 py-3 font-medium">ลูกค้า</th>
-                <th className="text-left px-4 py-3 font-medium">ที่อยู่</th>
-                <th className="text-left px-4 py-3 font-medium">AI</th>
-                <th className="text-left px-4 py-3 font-medium">สถานะตรวจ</th>
-                <th className="text-left px-4 py-3 font-medium">วันที่</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => (
-                <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.batch_code}</td>
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
-                    {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{row.address_summary ?? '—'}</td>
-                  <td className="px-4 py-3"><AiStatusBadge status={row.ai_status} /></td>
-                  <td className="px-4 py-3"><ReviewStatusBadge status={row.review_status} /></td>
-                  <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
-                    {new Date(row.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' })}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {/* Grouped table */}
+      {loading ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-sm text-gray-400">กำลังโหลด...</div>
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-sm text-gray-400">ไม่พบรายการ</div>
+      ) : (
+        <div className="space-y-5">
+          {groupBySender(rows).map(({ sender, items }) => (
+            <div key={sender} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              {/* Sender header */}
+              <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+                <svg className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span className="text-xs font-semibold text-gray-700 truncate">{sender}</span>
+                <span className="ml-auto text-xs text-gray-400 flex-shrink-0">{items.length} รายการ</span>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-100">
+                  <tr className="text-xs text-gray-400">
+                    <th className="text-left px-4 py-2.5 font-medium">Batch</th>
+                    <th className="text-left px-4 py-2.5 font-medium">ลูกค้า</th>
+                    <th className="text-left px-4 py-2.5 font-medium">ที่อยู่</th>
+                    <th className="text-left px-4 py-2.5 font-medium">AI</th>
+                    <th className="text-left px-4 py-2.5 font-medium">สถานะตรวจ</th>
+                    <th className="text-left px-4 py-2.5 font-medium">วันที่และเวลา</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {items.map((row) => (
+                    <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.batch_code}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
+                        {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{row.address_summary ?? '—'}</td>
+                      <td className="px-4 py-3"><AiStatusBadge status={row.ai_status} /></td>
+                      <td className="px-4 py-3"><ReviewStatusBadge status={row.review_status} /></td>
+                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                        {formatDateTime(row.created_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Drawer */}
       {drawerOrderId && (

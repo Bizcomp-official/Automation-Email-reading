@@ -91,6 +91,7 @@ export interface OrderListItem {
   address_summary: string | null
   province: string | null
   review_status: ReviewStatus
+  email_from: string | null
 }
 
 export interface SummaryStats {

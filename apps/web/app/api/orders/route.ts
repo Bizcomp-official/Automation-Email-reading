@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     .select(
       `id, seq, customer_name, company_name, ai_status, created_at,
        batch_id,
-       batches!inner(batch_code),
+       batches!inner(batch_code, email_from),
        addresses(subdistrict, district, province, postcode),
        reviews(is_status)`,
       { count: 'exact' },
@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
     id: o.id,
     batch_id: o.batch_id,
     batch_code: o.batches?.batch_code ?? null,
+    email_from: o.batches?.email_from ?? null,
     seq: o.seq,
     customer_name: o.customer_name,
     company_name: o.company_name,
