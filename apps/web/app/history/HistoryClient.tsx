@@ -27,14 +27,39 @@ function formatDateTime(iso: string): string {
   return `${date} ${time}`
 }
 
-function groupBySender(rows: OrderListItem[]): { sender: string; items: OrderListItem[] }[] {
-  const map = new Map<string, OrderListItem[]>()
+interface BatchGroup { batch_code: string; batch_id: string; items: OrderListItem[] }
+interface SenderGroup { sender: string; batches: BatchGroup[] }
+
+function groupBySender(rows: OrderListItem[]): SenderGroup[] {
+  const senderMap = new Map<string, Map<string, OrderListItem[]>>()
   for (const row of rows) {
-    const key = row.email_from ?? 'ไม่ระบุผู้ส่ง'
-    if (!map.has(key)) map.set(key, [])
-    map.get(key)!.push(row)
+    const sender = row.email_from ?? 'ไม่ระบุผู้ส่ง'
+    const batch  = row.batch_code ?? row.batch_id
+    if (!senderMap.has(sender)) senderMap.set(sender, new Map())
+    const batchMap = senderMap.get(sender)!
+    if (!batchMap.has(batch)) batchMap.set(batch, [])
+    batchMap.get(batch)!.push(row)
   }
-  return Array.from(map.entries()).map(([sender, items]) => ({ sender, items }))
+
+  const senderGroups = Array.from(senderMap.entries()).map(([sender, batchMap]) => {
+    const batches: BatchGroup[] = Array.from(batchMap.entries())
+      .map(([batch_code, items]) => ({
+        batch_code,
+        batch_id: items[0].batch_id,
+        // sort orders within batch newest-first
+        items: [...items].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      }))
+      // sort batches within sender newest-first
+      .sort((a, b) => new Date(b.items[0].created_at).getTime() - new Date(a.items[0].created_at).getTime())
+    return { sender, batches }
+  })
+
+  // sort sender groups by their most recent batch newest-first
+  return senderGroups.sort(
+    (a, b) =>
+      new Date(b.batches[0].items[0].created_at).getTime() -
+      new Date(a.batches[0].items[0].created_at).getTime(),
+  )
 }
 
 const ADDRESS_ROWS: [string, keyof Address][] = [
@@ -189,7 +214,7 @@ export default function HistoryClient() {
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-sm text-gray-400">ไม่พบรายการ</div>
       ) : (
         <div className="space-y-5">
-          {groupBySender(rows).map(({ sender, items }) => (
+          {groupBySender(rows).map(({ sender, batches }) => (
             <div key={sender} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               {/* Sender header */}
               <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-50 border-b border-gray-200">
@@ -197,37 +222,51 @@ export default function HistoryClient() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
                 <span className="text-xs font-semibold text-gray-700 truncate">{sender}</span>
-                <span className="ml-auto text-xs text-gray-400 flex-shrink-0">{items.length} รายการ</span>
+                <span className="ml-auto text-xs text-gray-400 flex-shrink-0">
+                  {batches.reduce((s, b) => s + b.items.length, 0)} รายการ · {batches.length} batch
+                </span>
               </div>
-              <table className="w-full text-sm">
-                <thead className="border-b border-gray-100">
-                  <tr className="text-xs text-gray-400">
-                    <th className="text-left px-4 py-2.5 font-medium">Batch</th>
-                    <th className="text-left px-4 py-2.5 font-medium">ลูกค้า</th>
-                    <th className="text-left px-4 py-2.5 font-medium">ที่อยู่</th>
-                    <th className="text-left px-4 py-2.5 font-medium">AI</th>
-                    <th className="text-left px-4 py-2.5 font-medium">สถานะตรวจ</th>
-                    <th className="text-left px-4 py-2.5 font-medium">วันที่และเวลา</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {items.map((row) => (
-                    <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{row.batch_code}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
-                        {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{row.address_summary ?? '—'}</td>
-                      <td className="px-4 py-3"><AiStatusBadge status={row.ai_status} /></td>
-                      <td className="px-4 py-3"><ReviewStatusBadge status={row.review_status} /></td>
-                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
-                        {formatDateTime(row.created_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+              {/* Batch sub-groups */}
+              {batches.map((batch, bi) => (
+                <div key={batch.batch_id} className={bi > 0 ? 'border-t border-gray-200' : ''}>
+                  {/* Batch sub-header */}
+                  <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border-b border-blue-100">
+                    <svg className="w-3 h-3 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8l1 12a2 2 0 002 2h8a2 2 0 002-2L19 8" />
+                    </svg>
+                    <span className="text-xs font-semibold text-blue-700 font-mono">{batch.batch_code}</span>
+                    <span className="text-xs text-blue-400">{batch.items.length} รายการ · {formatDateTime(batch.items[0].created_at)}</span>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="border-b border-gray-100">
+                      <tr className="text-xs text-gray-400">
+                        <th className="text-left px-4 py-2 font-medium">ลูกค้า</th>
+                        <th className="text-left px-4 py-2 font-medium">ที่อยู่</th>
+                        <th className="text-left px-4 py-2 font-medium">AI</th>
+                        <th className="text-left px-4 py-2 font-medium">สถานะตรวจ</th>
+                        <th className="text-left px-4 py-2 font-medium">วันที่และเวลา</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {batch.items.map((row) => (
+                        <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
+                            {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{row.address_summary ?? '—'}</td>
+                          <td className="px-4 py-3"><AiStatusBadge status={row.ai_status} /></td>
+                          <td className="px-4 py-3"><ReviewStatusBadge status={row.review_status} /></td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {formatDateTime(row.created_at)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           ))}
         </div>
