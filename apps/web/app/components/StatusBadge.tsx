@@ -2,14 +2,14 @@ import type { AiStatus, ValidationStatus, ReviewStatus } from '@fc/shared'
 
 const AI_STATUS: Record<AiStatus, { label: string; cls: string }> = {
   correct:    { label: 'ถูกต้อง',    cls: 'bg-green-100 text-green-800' },
-  missing:    { label: 'ขาดข้อมูล', cls: 'bg-gray-100 text-gray-600' },
+  missing:    { label: 'ขาดข้อมูล', cls: 'bg-red-100 text-red-700' },
   suspicious: { label: 'น่าสงสัย',  cls: 'bg-yellow-100 text-yellow-800' },
   incorrect:  { label: 'ไม่ถูกต้อง', cls: 'bg-red-100 text-red-700' },
 }
 
 const VALIDATION_STATUS: Record<ValidationStatus, { label: string; cls: string }> = {
   correct:    { label: 'ถูกต้อง',    cls: 'bg-green-100 text-green-800' },
-  missing:    { label: 'ขาดข้อมูล', cls: 'bg-gray-100 text-gray-600' },
+  missing:    { label: 'ขาดข้อมูล', cls: 'bg-red-100 text-red-700' },
   suspicious: { label: 'น่าสงสัย',  cls: 'bg-yellow-100 text-yellow-800' },
   suggested:  { label: 'แนะนำ',     cls: 'bg-blue-100 text-blue-800' },
   incorrect:  { label: 'ไม่ถูกต้อง', cls: 'bg-red-100 text-red-700' },
