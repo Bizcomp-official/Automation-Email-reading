@@ -145,7 +145,7 @@ export async function extractOrdersFromEmail(
   let response
   try {
     response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       contents: userContent,
       config: {
         systemInstruction: SYSTEM_PROMPT,
