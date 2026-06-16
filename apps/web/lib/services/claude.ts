@@ -1,7 +1,7 @@
-import { GoogleGenAI } from '@google/genai'
+import Anthropic from '@anthropic-ai/sdk'
 import type { ClaudeExtractionResult } from '@fc/shared'
 
-const ai = new GoogleGenAI({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const SYSTEM_PROMPT = `You are an expert data extraction assistant for True Corporation's FC (Facility Check) E-Ordering system used by Inside Sales staff.
 
@@ -61,10 +61,6 @@ For every significant field (including each address component), add an entry to 
   "suspicious" — present but inconsistent (e.g. postcode ≠ province, or district ≠ province)
   "suggested"  — not in the data, but inferred by AI from Thai geographic knowledge; ai_note MUST explain
   "incorrect"  — clearly wrong (impossible postcode, wrong province for that district, etc.)
-
-For inferred fields, ai_note must say what you inferred from, e.g.:
-  "อนุมานจากแขวงสีลม → เขตบางรัก กรุงเทพมหานคร 10500"
-  "Inferred from district บางแค → province กรุงเทพมหานคร, postcode likely 10160"
 
 Overall ai_status for the ORDER must be one of: "correct" | "missing" | "suspicious" | "incorrect"
   — "suggested" is NOT valid for ai_status (it is only valid inside the fields array).
@@ -143,38 +139,39 @@ export async function extractOrdersFromEmail(
 
   const userContent = parts.join('\n\n')
 
-  console.log('[gemini] sending to API — content length:', userContent.length, 'chars')
-  console.log('[gemini] first 500 chars of input:\n', userContent.slice(0, 500))
+  console.log('[claude] sending to API — content length:', userContent.length, 'chars')
+  console.log('[claude] first 500 chars of input:\n', userContent.slice(0, 500))
 
-  let response
+  let message
   try {
-    response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: userContent,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        maxOutputTokens: 8192,
-      },
+    message = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8192,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userContent }],
     })
   } catch (err) {
-    console.error('[gemini] API call threw:', String(err))
-    throw new Error(`Gemini API call failed: ${String(err)}`)
+    console.error('[claude] API call threw:', String(err))
+    throw new Error(`Claude API call failed: ${String(err)}`)
   }
 
-  const raw = response.text ?? ''
+  const raw = message.content
+    .filter((b) => b.type === 'text')
+    .map((b) => (b as { type: 'text'; text: string }).text)
+    .join('')
 
-  console.log('[gemini] response length:', raw.length)
-  console.log('[gemini] raw response:\n', raw)
+  console.log('[claude] response length:', raw.length)
+  console.log('[claude] raw response:\n', raw)
 
   let result: ClaudeExtractionResult
   try {
     result = JSON.parse(extractJson(raw)) as ClaudeExtractionResult
   } catch (err) {
-    console.error('[gemini] JSON parse failed. Raw was:\n', raw)
-    throw new Error(`Gemini returned invalid JSON: ${String(err)}`)
+    console.error('[claude] JSON parse failed. Raw was:\n', raw)
+    throw new Error(`Claude returned invalid JSON: ${String(err)}`)
   }
 
-  console.log(`[gemini] extracted ${result.orders.length} order(s)`)
+  console.log(`[claude] extracted ${result.orders.length} order(s)`)
   result.orders.forEach((o, i) => {
     console.log(`  order[${i}] customer:"${o.customer_name}" ai_status:"${o.ai_status}"`)
     console.log(`  order[${i}] address:`, JSON.stringify(o.address, null, 2))
