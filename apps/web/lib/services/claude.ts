@@ -146,17 +146,24 @@ export async function extractOrdersFromEmail(
   console.log('[gemini] sending to API — content length:', userContent.length, 'chars')
   console.log('[gemini] first 500 chars of input:\n', userContent.slice(0, 500))
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
-    contents: userContent,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      maxOutputTokens: 8192,
-    },
-  })
+  let response
+  try {
+    response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: userContent,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        maxOutputTokens: 8192,
+      },
+    })
+  } catch (err) {
+    console.error('[gemini] API call threw:', String(err))
+    throw new Error(`Gemini API call failed: ${String(err)}`)
+  }
 
   const raw = response.text ?? ''
 
+  console.log('[gemini] response.text length:', raw.length)
   console.log('[gemini] raw response:\n', raw)
 
   let result: ClaudeExtractionResult

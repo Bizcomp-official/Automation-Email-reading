@@ -146,8 +146,9 @@ export async function POST(req: NextRequest) {
   try {
     extraction = await extractOrdersFromEmail(parsed.bodyText, parsed.excelRows)
   } catch (err) {
+    console.error('[batches] extraction failed:', String(err))
     await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
-    return NextResponse.json({ error: 'Claude extraction failed', detail: String(err) }, { status: 502 })
+    return NextResponse.json({ error: 'Gemini extraction failed', detail: String(err) }, { status: 502 })
   }
 
   const createdOrders = []
