@@ -1,7 +1,179 @@
-import { GoogleGenAI } from '@google/genai'
-import type { ClaudeExtractionResult } from '@fc/shared'
+import Anthropic from '@anthropic-ai/sdk'
+import type { ClaudeExtractionResult, ClaudeOrder } from '@fc/shared'
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+
+// ── Google Maps URL resolution ──────────────────────────────────────────────
+
+const MAPS_URL_RE =
+  /https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.com\/maps|maps\.google\.com)[^\s<>"')\]　​]*/gi
+
+function extractCoordsFromUrl(url: string): { lat: string; lng: string } | null {
+  let m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)
+  if (m) return { lat: m[1], lng: m[2] }
+  m = url.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/)
+  if (m) return { lat: m[1], lng: m[2] }
+  m = url.match(/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/)
+  if (m) return { lat: m[1], lng: m[2] }
+  return null
+}
+
+async function resolveGoogleMapsUrls(text: string): Promise<string> {
+  const urls = [...new Set(Array.from(text.matchAll(MAPS_URL_RE), (m) => m[0]))]
+  if (urls.length === 0) return text
+
+  let result = text
+  await Promise.all(
+    urls.map(async (url) => {
+      try {
+        const res = await fetch(url, {
+          method: 'HEAD',
+          redirect: 'follow',
+          signal: AbortSignal.timeout(6000),
+        })
+        const finalUrl = res.url
+        const coords = extractCoordsFromUrl(finalUrl) ?? extractCoordsFromUrl(url)
+        if (coords) {
+          const annotation = ` [พิกัด GPS ที่สกัดจาก Google Maps: latitude=${coords.lat}, longitude=${coords.lng}]`
+          result = result.replace(url, url + annotation)
+          console.log(`[maps] resolved ${url} → lat=${coords.lat}, lng=${coords.lng}`)
+        } else {
+          console.log(`[maps] resolved ${url} but no coords found in: ${finalUrl}`)
+        }
+      } catch (err) {
+        console.warn(`[maps] could not resolve ${url}:`, String(err))
+      }
+    }),
+  )
+  return result
+}
+
+// ── Geocoding ─────────────────────────────────────────────────────────────
+
+interface GoogleGeocodeResponse {
+  status: string
+  results: Array<{ geometry: { location: { lat: number; lng: number } }; types: string[] }>
+}
+interface NominatimResult { lat: string; lon: string; importance: number }
+
+type Coords = { lat: number; lng: number; source: string }
+
+/** Build a ranked list of address query strings, most-specific first. */
+function buildAddressQueries(addr: NonNullable<ClaudeOrder['address']>): string[] {
+  const houseRoad = [
+    addr.house_no,
+    addr.soi    ? `ซอย${addr.soi}`  : null,
+    addr.road   ? `ถนน${addr.road}` : null,
+  ].filter(Boolean).join(' ')
+
+  const adminArea = [addr.subdistrict, addr.district, addr.province].filter(Boolean).join(' ')
+  const postcode  = addr.postcode ?? ''
+
+  const q1 = [houseRoad, adminArea, postcode, 'Thailand'].filter(Boolean).join(' ')   // full
+  const q2 = [houseRoad, adminArea, 'Thailand'].filter(Boolean).join(' ')             // no postcode
+  const q3 = [adminArea, postcode, 'Thailand'].filter(Boolean).join(' ')             // admin+postcode
+  const q4 = [adminArea, 'Thailand'].filter(Boolean).join(' ')                       // admin only
+
+  return [...new Set([q1, q2, q3, q4])].filter(
+    (q) => q.replace('Thailand', '').trim().length > 2,
+  )
+}
+
+/** Primary geocoder: Google Maps Geocoding API (accurate, needs GOOGLE_MAPS_API_KEY). */
+async function geocodeWithGoogle(
+  addr: NonNullable<ClaudeOrder['address']>,
+): Promise<Coords | null> {
+  const key = process.env.GOOGLE_MAPS_API_KEY
+  if (!key) return null
+
+  const queries = buildAddressQueries(addr)
+
+  for (const q of queries) {
+    try {
+      const url =
+        `https://maps.googleapis.com/maps/api/geocode/json` +
+        `?address=${encodeURIComponent(q)}&key=${key}&language=th&region=TH&components=country:TH`
+      const res  = await fetch(url, { signal: AbortSignal.timeout(7000) })
+      const data = (await res.json()) as GoogleGeocodeResponse
+
+      if (data.status === 'OK' && data.results.length > 0) {
+        const { lat, lng } = data.results[0].geometry.location
+        console.log(`[geocode/google] "${q}" → lat=${lat}, lng=${lng}`)
+        return { lat, lng, source: 'Google Maps Geocoding API' }
+      }
+      console.log(`[geocode/google] no result for "${q}" (status: ${data.status})`)
+    } catch (err) {
+      console.warn(`[geocode/google] error for "${q}":`, String(err))
+    }
+  }
+  return null
+}
+
+/** Fallback geocoder: OpenStreetMap Nominatim (free, slightly lower accuracy for Thai addresses). */
+async function geocodeWithNominatim(
+  addr: NonNullable<ClaudeOrder['address']>,
+): Promise<Coords | null> {
+  const queries = buildAddressQueries(addr)
+
+  for (const q of queries) {
+    try {
+      // 1. Try structured search first (better precision)
+      if (addr.subdistrict || addr.district || addr.province) {
+        const street  = [addr.house_no, addr.soi && `ซอย${addr.soi}`, addr.road && `ถนน${addr.road}`].filter(Boolean).join(' ')
+        const params  = new URLSearchParams({
+          format: 'json', limit: '3', countrycodes: 'th', addressdetails: '0',
+          ...(street             && { street }),
+          ...(addr.subdistrict   && { suburb: addr.subdistrict }),
+          ...(addr.district      && { city: addr.district }),
+          ...(addr.province      && { state: addr.province }),
+          ...(addr.postcode      && { postalcode: addr.postcode }),
+          country: 'Thailand',
+        })
+        const sRes  = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+          headers: { 'User-Agent': 'FC-Address-Intelligence/1.0 (True Corporation IS)' },
+          signal: AbortSignal.timeout(7000),
+        })
+        const sData = (await sRes.json()) as NominatimResult[]
+        // Pick highest-importance result
+        const best = sData.sort((a, b) => b.importance - a.importance)[0]
+        if (best) {
+          const lat = parseFloat(best.lat), lng = parseFloat(best.lon)
+          console.log(`[geocode/nominatim/structured] "${q}" → lat=${lat}, lng=${lng}`)
+          return { lat, lng, source: 'OpenStreetMap Nominatim' }
+        }
+      }
+
+      // 2. Free-text fallback
+      const url =
+        `https://nominatim.openstreetmap.org/search` +
+        `?q=${encodeURIComponent(q)}&format=json&limit=3&countrycodes=th`
+      const res  = await fetch(url, {
+        headers: { 'User-Agent': 'FC-Address-Intelligence/1.0 (True Corporation IS)' },
+        signal: AbortSignal.timeout(7000),
+      })
+      const data = (await res.json()) as NominatimResult[]
+      const best = data.sort((a, b) => b.importance - a.importance)[0]
+      if (best) {
+        const lat = parseFloat(best.lat), lng = parseFloat(best.lon)
+        console.log(`[geocode/nominatim/freetext] "${q}" → lat=${lat}, lng=${lng}`)
+        return { lat, lng, source: 'OpenStreetMap Nominatim' }
+      }
+      console.log(`[geocode/nominatim] no result for "${q}"`)
+    } catch (err) {
+      console.warn(`[geocode/nominatim] error for "${q}":`, String(err))
+    }
+  }
+  return null
+}
+
+async function geocodeThaiAddress(
+  addr: ClaudeOrder['address'],
+): Promise<Coords | null> {
+  if (!addr) return null
+  return (await geocodeWithGoogle(addr)) ?? (await geocodeWithNominatim(addr))
+}
+
+// ── System prompt ────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are an expert data extraction assistant for True Corporation's FC (Facility Check) E-Ordering system used by Inside Sales staff.
 
@@ -22,8 +194,14 @@ PHASE A — EXTRACT what is explicitly in the data:
     "เลขที่ 99/9 หมู่ 3 ซอยเพชรเกษม 10 ถนนเพชรเกษม แขวงหลักสอง เขตบางแค กรุงเทพฯ 10160"
   must be split into its components.
 • If columns are already split (บ้านเลขที่, ซอย, ถนน, แขวง, เขต, จังหวัด, ไปรษณีย์), use them directly.
-• If a Google Maps URL is present, extract latitude and longitude from it.
-• If explicit GPS coordinates appear, use them.
+
+COORDINATES — extract from the data if present, otherwise leave null (the system will geocode automatically):
+• If the data contains a line like [พิกัด GPS ที่สกัดจาก Google Maps: latitude=X, longitude=Y],
+  copy X and Y verbatim — character by character, no rounding.
+• If a Google Maps URL appears with @lat,lng or ?q=lat,lng, extract those digits exactly.
+• If a plain coordinate pair appears (e.g. "13.756789, 100.523456"), copy every digit exactly.
+• If none of the above are present → set latitude and longitude to null. Do NOT guess or infer.
+• input_format: "google_maps_link" when from a URL, "lat_long" when plain numbers, "plain_text" otherwise.
 
 PHASE B — INFER what is missing using your knowledge of Thai geography:
 Use your knowledge of Thailand's administrative divisions to complete any gaps:
@@ -50,8 +228,8 @@ Address fields to populate (null only if truly undetectable even by inference):
   district    — เขต หรือ อำเภอ
   province    — จังหวัด
   postcode    — รหัสไปรษณีย์ (5 หลัก)
-  latitude    — decimal degrees or null
-  longitude   — decimal degrees or null
+  latitude    — decimal degrees, full precision from source, or null
+  longitude   — decimal degrees, full precision from source, or null
   input_format — "google_maps_link" | "lat_long" | "plain_text"
 
 ━━━ STEP 3: VALIDATE EACH FIELD ━━━
@@ -111,6 +289,8 @@ no markdown outside the braces, no "I'll analyze..." text. Start your reply with
   ]
 }`
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 function extractJson(raw: string): string {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fenced?.[1]) return fenced[1].trim()
@@ -119,6 +299,8 @@ function extractJson(raw: string): string {
   if (start !== -1 && end > start) return raw.slice(start, end + 1)
   return raw.trim()
 }
+
+// ── Main export ───────────────────────────────────────────────────────────────
 
 export async function extractOrdersFromEmail(
   emailBody: string,
@@ -137,44 +319,70 @@ export async function extractOrdersFromEmail(
     throw new Error('No content to extract from — email body and Excel are both empty')
   }
 
-  const userContent = parts.join('\n\n')
+  const rawContent = parts.join('\n\n')
 
-  console.log('[gemini] sending to API — content length:', userContent.length, 'chars')
-  console.log('[gemini] first 500 chars of input:\n', userContent.slice(0, 500))
+  // Step 1: resolve any Google Maps URLs → inject coords as plain text for Claude
+  const userContent = await resolveGoogleMapsUrls(rawContent)
 
-  let response
+  console.log('[claude] sending to API — content length:', userContent.length, 'chars')
+  console.log('[claude] first 500 chars of input:\n', userContent.slice(0, 500))
+
+  let message: Anthropic.Message
   try {
-    response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: userContent,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        maxOutputTokens: 8192,
-      },
+    message = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 8192,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userContent }],
     })
   } catch (err) {
-    console.error('[gemini] API call threw:', String(err))
-    throw new Error(`Gemini API call failed: ${String(err)}`)
+    console.error('[claude] API call threw:', String(err))
+    throw new Error(`Claude API call failed: ${String(err)}`)
   }
 
-  const raw = response.text ?? ''
+  const raw = message.content[0].type === 'text' ? message.content[0].text : ''
 
-  console.log('[gemini] response length:', raw.length)
-  console.log('[gemini] raw response:\n', raw)
+  console.log('[claude] response length:', raw.length)
+  console.log('[claude] raw response:\n', raw)
 
   let result: ClaudeExtractionResult
   try {
     result = JSON.parse(extractJson(raw)) as ClaudeExtractionResult
   } catch (err) {
-    console.error('[gemini] JSON parse failed. Raw was:\n', raw)
-    throw new Error(`Gemini returned invalid JSON: ${String(err)}`)
+    console.error('[claude] JSON parse failed. Raw was:\n', raw)
+    throw new Error(`Claude returned invalid JSON: ${String(err)}`)
   }
 
-  console.log(`[gemini] extracted ${result.orders.length} order(s)`)
-  result.orders.forEach((o, i) => {
-    console.log(`  order[${i}] customer:"${o.customer_name}" ai_status:"${o.ai_status}"`)
-    console.log(`  order[${i}] address:`, JSON.stringify(o.address, null, 2))
-  })
+  console.log(`[claude] extracted ${result.orders.length} order(s)`)
+
+  // Step 2: for any order still missing lat/lng, geocode via Nominatim OSM
+  for (const order of result.orders) {
+    const addr = order.address
+    if (!addr) continue
+
+    const hasCoords = addr.latitude != null && addr.longitude != null
+    if (hasCoords) {
+      console.log(`  [geocode] order "${order.customer_name}" already has coords — skipping`)
+      continue
+    }
+
+    console.log(`  [geocode] order "${order.customer_name}" has no coords — geocoding address...`)
+    const coords = await geocodeThaiAddress(addr)
+    if (coords) {
+      addr.latitude  = coords.lat
+      addr.longitude = coords.lng
+      const note = `geocoded จากที่อยู่ผ่าน ${coords.source}`
+      const latField = order.fields?.find((f) => f.field_name === 'latitude')
+      const lngField = order.fields?.find((f) => f.field_name === 'longitude')
+      if (latField) { latField.value = String(coords.lat); latField.status = 'suggested'; latField.ai_note = note }
+      if (lngField) { lngField.value = String(coords.lng); lngField.status = 'suggested'; lngField.ai_note = note }
+    } else {
+      console.warn(`  [geocode] could not resolve coords for order "${order.customer_name}"`)
+    }
+
+    console.log(`  order[...] customer:"${order.customer_name}" ai_status:"${order.ai_status}"`)
+    console.log(`  order[...] address:`, JSON.stringify(addr, null, 2))
+  }
 
   return result
 }
