@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect } from 'react'
-import type { Batch, Order, FieldValidation, Address } from '@fc/shared'
+import type { Batch, Order, FieldValidation, Address, ValidationStatus } from '@fc/shared'
 import { uploadBatch } from '@/lib/api'
 import { AiStatusBadge, ValidationStatusBadge } from '../components/StatusBadge'
 import MapPreview from '../components/MapPreview'
@@ -9,29 +9,92 @@ import MapPreview from '../components/MapPreview'
 type Tab = 'upload' | 'extraction' | 'geolocation'
 const STORAGE_KEY = 'fc-current-batch'
 
+// ── Column definitions ────────────────────────────────────────────────────────
+
+const INFO_COLS = [
+  { key: 'customer_name',      label: 'ชื่อลูกค้า' },
+  { key: 'company_name',       label: 'บริษัท' },
+  { key: 'circuit_order_type', label: 'ประเภทวงจร' },
+  { key: 'product_package',    label: 'แพ็คเกจ' },
+  { key: 'speed',              label: 'ความเร็ว' },
+  { key: 'store_code',         label: 'รหัสสาขา' },
+  { key: 'branch_name',        label: 'ชื่อสาขา' },
+  { key: 'coordinator_name',   label: 'ผู้ประสานงาน' },
+  { key: 'coordinator_phone',  label: 'เบอร์ติดต่อ' },
+]
+
+const ADDR_COLS = [
+  { key: 'house_no',    label: 'บ้านเลขที่' },
+  { key: 'moo',         label: 'หมู่ที่' },
+  { key: 'building',    label: 'อาคาร' },
+  { key: 'floor',       label: 'ชั้น' },
+  { key: 'room',        label: 'ห้อง' },
+  { key: 'soi',         label: 'ซอย' },
+  { key: 'road',        label: 'ถนน' },
+  { key: 'subdistrict', label: 'แขวง/ตำบล' },
+  { key: 'district',    label: 'เขต/อำเภอ' },
+  { key: 'province',    label: 'จังหวัด' },
+  { key: 'postcode',    label: 'รหัสไปรษณีย์' },
+  { key: 'latitude',    label: 'ละติจูด' },
+  { key: 'longitude',   label: 'ลองจิจูด' },
+]
+
+const ADDR_KEYS = new Set(ADDR_COLS.map((c) => c.key))
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+type RichOrder = Order & { addresses?: Address | Address[]; field_validations?: FieldValidation[] }
+
+function unwrapAddr(order: RichOrder): Address | undefined {
+  return Array.isArray(order.addresses) ? order.addresses[0] : order.addresses
+}
+
+function unwrapFv(order: RichOrder): FieldValidation[] {
+  return Array.isArray(order.field_validations) ? order.field_validations : []
+}
+
+function buildFvMap(fvs: FieldValidation[]): Record<string, FieldValidation> {
+  return Object.fromEntries(fvs.map((f) => [f.field_name, f]))
+}
+
+function getFieldValue(order: RichOrder, key: string): string | null {
+  if (ADDR_KEYS.has(key)) {
+    const addr = unwrapAddr(order)
+    const v = addr?.[key as keyof Address]
+    return v != null ? String(v) : null
+  }
+  const v = (order as unknown as Record<string, unknown>)[key]
+  return v != null ? String(v) : null
+}
+
+function cellStyle(status: ValidationStatus | undefined): string {
+  switch (status) {
+    case 'missing':
+    case 'incorrect':  return 'bg-red-50 text-red-700'
+    case 'suspicious': return 'bg-amber-50 text-amber-800'
+    case 'suggested':  return 'bg-blue-50 text-blue-800'
+    default:           return 'text-gray-800'
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function NewBatchClient() {
-  const [tab, setTab] = useState<Tab>('upload')
-  const [dragging, setDragging] = useState(false)
-  const [file, setFile] = useState<File | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [batch, setBatch] = useState<(Batch & { orders: Order[] }) | null>(null)
+  const [tab, setTab]                       = useState<Tab>('upload')
+  const [dragging, setDragging]             = useState(false)
+  const [file, setFile]                     = useState<File | null>(null)
+  const [loading, setLoading]               = useState(false)
+  const [error, setError]                   = useState<string | null>(null)
+  const [batch, setBatch]                   = useState<(Batch & { orders: Order[] }) | null>(null)
   const [selectedOrderIdx, setSelectedOrderIdx] = useState(0)
-  const [showRaw, setShowRaw] = useState(false)
+  const [showRaw, setShowRaw]               = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Restore batch from localStorage on first mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        const parsed = JSON.parse(saved)
-        setBatch(parsed)
-        setTab('extraction')
-      }
-    } catch {
-      localStorage.removeItem(STORAGE_KEY)
-    }
+      if (saved) { setBatch(JSON.parse(saved)); setTab('extraction') }
+    } catch { localStorage.removeItem(STORAGE_KEY) }
   }, [])
 
   const saveBatch = (b: Batch & { orders: Order[] }) => {
@@ -40,92 +103,53 @@ export default function NewBatchClient() {
   }
 
   const clearBatch = () => {
-    setBatch(null)
-    setFile(null)
-    setError(null)
-    setSelectedOrderIdx(0)
-    setShowRaw(false)
-    setTab('upload')
+    setBatch(null); setFile(null); setError(null)
+    setSelectedOrderIdx(0); setShowRaw(false); setTab('upload')
     localStorage.removeItem(STORAGE_KEY)
   }
 
   const handleFile = (f: File) => {
-    if (!/\.(eml|msg)$/i.test(f.name)) {
-      setError('กรุณาเลือกไฟล์ .eml หรือ .msg เท่านั้น')
-      return
-    }
-    setFile(f)
-    setError(null)
+    if (!/\.(eml|msg)$/i.test(f.name)) { setError('กรุณาเลือกไฟล์ .eml หรือ .msg เท่านั้น'); return }
+    setFile(f); setError(null)
   }
 
   const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setDragging(false)
-    const f = e.dataTransfer.files[0]
-    if (f) handleFile(f)
+    e.preventDefault(); setDragging(false)
+    const f = e.dataTransfer.files[0]; if (f) handleFile(f)
   }, [])
 
   const onSubmit = async () => {
     if (!file) return
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     try {
       const result = await uploadBatch(file)
-      saveBatch(result)
-      setSelectedOrderIdx(0)
-      setShowRaw(false)
-      setTab('extraction')
-      console.log('[UI] full batch response:', JSON.stringify(result, null, 2))
+      saveBatch(result); setSelectedOrderIdx(0); setShowRaw(false); setTab('extraction')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด')
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }
 
-  const selectedOrder = batch?.orders?.[selectedOrderIdx]
+  const orders = (batch?.orders ?? []) as RichOrder[]
+  const selectedOrder = orders[selectedOrderIdx]
+  const address = selectedOrder ? unwrapAddr(selectedOrder) : undefined
+  const fieldValidations = selectedOrder ? unwrapFv(selectedOrder) : []
+  const hasNotes = orders.some((o) => (o as RichOrder & { customer_note?: string }).customer_note)
 
-  // Supabase join returns addresses as an array even for 1-to-1
-  const rawAddr = (selectedOrder as Order & { addresses?: Address | Address[] })?.addresses
-  const address: Address | undefined = Array.isArray(rawAddr) ? rawAddr[0] : rawAddr
-
-  // field_validations is always an array from the join
-  const rawFv = (selectedOrder as Order & { field_validations?: FieldValidation[] })?.field_validations
-  const fieldValidations: FieldValidation[] = Array.isArray(rawFv) ? rawFv : []
-
-  // Log whenever selected order changes so we can inspect in DevTools
-  useEffect(() => {
-    if (selectedOrder) {
-      console.log('[UI] selectedOrder:', JSON.stringify(selectedOrder, null, 2))
-      console.log('[UI] address:', JSON.stringify(address, null, 2))
-      console.log('[UI] fieldValidations:', JSON.stringify(fieldValidations, null, 2))
-    }
-  }, [selectedOrder])
-
-  const ADDRESS_FIELD_NAMES = new Set(['house_no','moo','building','floor','room','soi','road','subdistrict','district','province','postcode','latitude','longitude'])
-  const customerFields = fieldValidations.filter((f) => !ADDRESS_FIELD_NAMES.has(f.field_name))
-  const addressFields = fieldValidations.filter((f) => ADDRESS_FIELD_NAMES.has(f.field_name))
-
-  const FIELD_LABELS: Record<string, string> = {
-    customer_name: 'ชื่อลูกค้า', company_name: 'บริษัท', circuit_order_type: 'ประเภทวงจร',
-    old_circuit: 'วงจรเดิม', product_package: 'แพ็คเกจ', speed: 'ความเร็ว',
-    store_code: 'รหัสสาขา', branch_name: 'ชื่อสาขา', coordinator_name: 'ผู้ประสานงาน',
-    coordinator_phone: 'เบอร์ติดต่อ', house_no: 'บ้านเลขที่', moo: 'หมู่ที่',
-    building: 'อาคาร', floor: 'ชั้น', room: 'ห้อง', soi: 'ซอย', road: 'ถนน',
-    subdistrict: 'แขวง/ตำบล', district: 'เขต/อำเภอ', province: 'จังหวัด',
-    postcode: 'รหัสไปรษณีย์', latitude: 'ละติจูด', longitude: 'ลองจิจูด',
+  const selectOrder = (i: number, goGeo = false) => {
+    setSelectedOrderIdx(i)
+    if (goGeo) setTab('geolocation')
   }
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="p-8">
+      {/* Header */}
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">New Batch</h1>
           <p className="text-sm text-gray-500 mt-1">อัปโหลดอีเมลคำสั่งติดตั้งและให้ AI วิเคราะห์ที่อยู่</p>
           {batch && (
             <p className="text-xs text-gray-400 mt-1">
-              Batch: <span className="font-mono">{batch.batch_code}</span>
-              {' · '}{batch.orders.length} คำสั่ง
+              Batch: <span className="font-mono">{batch.batch_code}</span>{' · '}{batch.orders.length} คำสั่ง
             </p>
           )}
         </div>
@@ -135,7 +159,7 @@ export default function NewBatchClient() {
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-sm text-gray-500 hover:border-red-300 hover:text-red-600 hover:bg-red-50 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" transform="rotate(45 12 12)" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
             เริ่ม Batch ใหม่
           </button>
@@ -145,8 +169,8 @@ export default function NewBatchClient() {
       {/* Tabs */}
       <div className="flex border-b border-gray-200 mb-6 gap-1">
         {(['upload', 'extraction', 'geolocation'] as Tab[]).map((t) => {
-          const labels: Record<Tab, string> = { upload: 'อัปโหลด', extraction: 'ข้อมูลและการตรวจสอบ', geolocation: 'ที่อยู่และพิกัด' }
-          const active = tab === t
+          const labels: Record<Tab, string> = { upload: 'อัปโหลด', extraction: 'ผลการวิเคราะห์', geolocation: 'ที่อยู่และพิกัด' }
+          const active  = tab === t
           const enabled = t === 'upload' || !!batch
           return (
             <button
@@ -154,11 +178,9 @@ export default function NewBatchClient() {
               onClick={() => enabled && setTab(t)}
               disabled={!enabled}
               className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                active
-                  ? 'border-[#185FA5] text-[#185FA5]'
-                  : enabled
-                  ? 'border-transparent text-gray-500 hover:text-gray-700'
-                  : 'border-transparent text-gray-300 cursor-not-allowed'
+                active   ? 'border-[#185FA5] text-[#185FA5]'
+                : enabled ? 'border-transparent text-gray-500 hover:text-gray-700'
+                : 'border-transparent text-gray-300 cursor-not-allowed'
               }`}
             >
               {labels[t]}
@@ -167,9 +189,9 @@ export default function NewBatchClient() {
         })}
       </div>
 
-      {/* Upload tab */}
+      {/* ── Upload tab ── */}
       {tab === 'upload' && (
-        <div className="space-y-4">
+        <div className="space-y-4 max-w-2xl">
           <div
             onDrop={onDrop}
             onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
@@ -179,13 +201,8 @@ export default function NewBatchClient() {
               dragging ? 'border-[#185FA5] bg-blue-50' : 'border-gray-300 hover:border-[#185FA5] hover:bg-gray-50'
             }`}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".eml,.msg"
-              className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
-            />
+            <input ref={fileInputRef} type="file" accept=".eml,.msg" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
             <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
             </svg>
@@ -226,144 +243,275 @@ export default function NewBatchClient() {
         </div>
       )}
 
-      {/* Extraction tab */}
+      {/* ── Extraction tab — spreadsheet layout ── */}
       {tab === 'extraction' && batch && (
         <div className="space-y-4">
-          {/* Order selector */}
-          {batch.orders.length > 1 && (
-            <div className="flex gap-2 flex-wrap">
-              {batch.orders.map((o, i) => (
-                <button
-                  key={o.id}
-                  onClick={() => setSelectedOrderIdx(i)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                    selectedOrderIdx === i
-                      ? 'text-white border-[#185FA5]'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-[#185FA5]'
-                  }`}
-                  style={selectedOrderIdx === i ? { backgroundColor: '#185FA5' } : {}}
-                >
-                  วงจร {i + 1}: {o.customer_name ?? '(ไม่มีชื่อ)'}
-                </button>
-              ))}
+
+          {/* Legend */}
+          <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+            <span className="font-medium text-gray-600">สีเซลล์:</span>
+            {[
+              { cls: 'bg-white border border-gray-200',    label: 'ถูกต้อง' },
+              { cls: 'bg-red-50 text-red-700',             label: 'ไม่พบ / ผิด' },
+              { cls: 'bg-amber-50 text-amber-800',         label: 'น่าสงสัย' },
+              { cls: 'bg-blue-50 text-blue-800',           label: 'AI อนุมาน' },
+            ].map(({ cls, label }) => (
+              <span key={label} className={`px-2 py-0.5 rounded font-medium ${cls}`}>{label}</span>
+            ))}
+            <span className="ml-auto text-gray-400">คลิกแถวเพื่อดูรายละเอียด</span>
+          </div>
+
+          {/* Spreadsheet */}
+          <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+            <table className="text-sm border-collapse" style={{ minWidth: 'max-content' }}>
+              <thead>
+                {/* Group header row */}
+                <tr className="bg-gray-100 border-b border-gray-300">
+                  <th className="sticky left-0 z-20 bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-500 border-r border-gray-300" rowSpan={2}>#</th>
+                  <th className="px-3 py-2 text-xs font-semibold text-gray-500 border-r border-gray-300 text-center" rowSpan={2}>สถานะ AI</th>
+                  <th
+                    colSpan={INFO_COLS.length}
+                    className="px-3 py-2 text-xs font-semibold text-[#185FA5] border-r border-gray-300 text-center bg-blue-50"
+                  >
+                    ข้อมูลลูกค้า / วงจร
+                  </th>
+                  <th
+                    colSpan={ADDR_COLS.length}
+                    className={`px-3 py-2 text-xs font-semibold text-emerald-700 text-center bg-emerald-50 ${hasNotes ? 'border-r border-gray-300' : ''}`}
+                  >
+                    ที่อยู่ปลายทาง
+                  </th>
+                  {hasNotes && (
+                    <th className="px-3 py-2 text-xs font-semibold text-amber-700 text-center bg-amber-50" rowSpan={2}>
+                      หมายเหตุจากผู้ส่ง
+                    </th>
+                  )}
+                </tr>
+                {/* Field name row */}
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  {INFO_COLS.map((col, i) => (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2 text-left text-xs font-medium text-gray-500 whitespace-nowrap bg-blue-50/40 ${i < INFO_COLS.length - 1 ? 'border-r border-gray-100' : 'border-r border-gray-300'}`}
+                    >
+                      {col.label}
+                    </th>
+                  ))}
+                  {ADDR_COLS.map((col, i) => (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2 text-left text-xs font-medium text-gray-500 whitespace-nowrap bg-emerald-50/40 ${i < ADDR_COLS.length - 1 ? 'border-r border-gray-100' : ''}`}
+                    >
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((order, i) => {
+                  const fvMap = buildFvMap(unwrapFv(order))
+                  const note  = (order as RichOrder & { customer_note?: string }).customer_note
+                  const isSelected = selectedOrderIdx === i
+
+                  return (
+                    <tr
+                      key={order.id}
+                      onClick={() => selectOrder(i)}
+                      className={`border-b border-gray-100 last:border-b-0 cursor-pointer transition-colors ${
+                        isSelected ? 'ring-2 ring-inset ring-[#185FA5]' : 'hover:bg-gray-50/60'
+                      }`}
+                    >
+                      {/* Row number — sticky */}
+                      <td className={`sticky left-0 z-10 px-3 py-2.5 text-xs text-center font-mono border-r border-gray-200 ${isSelected ? 'bg-blue-50 text-[#185FA5] font-bold' : 'bg-white text-gray-400'}`}>
+                        {i + 1}
+                      </td>
+
+                      {/* AI status */}
+                      <td className="px-3 py-2.5 border-r border-gray-200 text-center">
+                        <AiStatusBadge status={order.ai_status} />
+                      </td>
+
+                      {/* Customer info cells */}
+                      {INFO_COLS.map((col, ci) => {
+                        const val    = getFieldValue(order, col.key)
+                        const fv     = fvMap[col.key]
+                        const status = fv?.status
+                        return (
+                          <td
+                            key={col.key}
+                            title={fv?.ai_note ?? undefined}
+                            className={`px-3 py-2.5 whitespace-nowrap ${cellStyle(status)} ${ci < INFO_COLS.length - 1 ? 'border-r border-gray-100' : 'border-r border-gray-200'}`}
+                          >
+                            {val ?? <span className="text-gray-300">—</span>}
+                          </td>
+                        )
+                      })}
+
+                      {/* Address cells */}
+                      {ADDR_COLS.map((col, ci) => {
+                        const val    = getFieldValue(order, col.key)
+                        const fv     = fvMap[col.key]
+                        const status = fv?.status
+                        return (
+                          <td
+                            key={col.key}
+                            title={fv?.ai_note ?? undefined}
+                            className={`px-3 py-2.5 whitespace-nowrap font-mono text-xs ${cellStyle(status)} ${ci < ADDR_COLS.length - 1 ? 'border-r border-gray-100' : ''}`}
+                          >
+                            {val ?? <span className="text-gray-300">—</span>}
+                          </td>
+                        )
+                      })}
+
+                      {/* Note */}
+                      {hasNotes && (
+                        <td className="px-3 py-2.5 text-xs text-amber-800 max-w-xs whitespace-normal leading-snug border-l border-gray-200">
+                          {note ?? <span className="text-gray-300">—</span>}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer row */}
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs text-gray-400">
+              {orders.length} คำสั่ง · วางเมาส์เหนือเซลล์เพื่อดูหมายเหตุ AI · คลิกแถวเพื่อเลือกและดูรายละเอียด
+            </p>
+            <button
+              onClick={() => setShowRaw((v) => !v)}
+              className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-2 py-1"
+            >
+              {showRaw ? 'ซ่อน' : 'ดู'} Raw JSON
+            </button>
+          </div>
+
+          {showRaw && selectedOrder && (
+            <div className="bg-gray-900 rounded-xl p-4 overflow-auto max-h-96">
+              <p className="text-xs text-gray-400 mb-2 font-mono">Raw — order {selectedOrderIdx + 1}</p>
+              <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
+                {JSON.stringify(selectedOrder, null, 2)}
+              </pre>
             </div>
           )}
 
-          {selectedOrder && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="font-semibold text-gray-900">{selectedOrder.customer_name ?? '(ไม่มีชื่อลูกค้า)'}</h2>
-                <AiStatusBadge status={selectedOrder.ai_status} />
-              </div>
+          {/* ── Detail panel for selected order ── */}
+          {selectedOrder && (() => {
+            const fvs      = unwrapFv(selectedOrder)
+            const custFvs  = fvs.filter((f) => !ADDR_KEYS.has(f.field_name))
+            const addrFvs  = fvs.filter((f) => ADDR_KEYS.has(f.field_name))
+            const note     = (selectedOrder as RichOrder & { customer_note?: string }).customer_note
 
-              {/* Customer / circuit info */}
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ข้อมูลลูกค้า / วงจร</h3>
-                </div>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-100">
-                      <th className="text-left px-4 py-2 font-medium">ฟิลด์</th>
-                      <th className="text-left px-4 py-2 font-medium">ค่า</th>
-                      <th className="text-left px-4 py-2 font-medium">สถานะ</th>
-                      <th className="text-left px-4 py-2 font-medium">หมายเหตุ AI</th>
-                      <th className="text-right px-4 py-2 font-medium">ความเชื่อมั่น</th>
+            const FIELD_LABELS: Record<string, string> = {
+              customer_name: 'ชื่อลูกค้า', company_name: 'บริษัท', circuit_order_type: 'ประเภทวงจร',
+              old_circuit: 'วงจรเดิม', product_package: 'แพ็คเกจ', speed: 'ความเร็ว',
+              store_code: 'รหัสสาขา', branch_name: 'ชื่อสาขา', coordinator_name: 'ผู้ประสานงาน',
+              coordinator_phone: 'เบอร์ติดต่อ', house_no: 'บ้านเลขที่', moo: 'หมู่ที่',
+              building: 'อาคาร', floor: 'ชั้น', room: 'ห้อง', soi: 'ซอย', road: 'ถนน',
+              subdistrict: 'แขวง/ตำบล', district: 'เขต/อำเภอ', province: 'จังหวัด',
+              postcode: 'รหัสไปรษณีย์', latitude: 'ละติจูด', longitude: 'ลองจิจูด',
+            }
+
+            const DetailTable = ({ rows }: { rows: FieldValidation[] }) => (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 border-b border-gray-100">
+                    <th className="text-left px-4 py-2 font-medium w-36">ฟิลด์</th>
+                    <th className="text-left px-4 py-2 font-medium">ค่า</th>
+                    <th className="text-left px-4 py-2 font-medium w-28">สถานะ</th>
+                    <th className="text-left px-4 py-2 font-medium">หมายเหตุ AI</th>
+                    <th className="text-right px-4 py-2 font-medium w-20">ความเชื่อมั่น</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length > 0 ? rows.map((f) => (
+                    <tr key={f.id} className="border-b border-gray-50 last:border-0">
+                      <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{FIELD_LABELS[f.field_name] ?? f.field_name}</td>
+                      <td className="px-4 py-2.5 font-medium text-gray-900">{f.value || '—'}</td>
+                      <td className="px-4 py-2.5">
+                        <ValidationStatusBadge status={f.status} />
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500 max-w-xs">{f.ai_note || '—'}</td>
+                      <td className="px-4 py-2.5 text-right text-xs text-gray-500">
+                        {f.confidence != null ? `${Math.round((f.confidence) * 100)}%` : '—'}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {customerFields.length > 0 ? customerFields.map((f) => (
-                      <tr key={f.id} className="border-b border-gray-50 last:border-0">
-                        <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{FIELD_LABELS[f.field_name] ?? f.field_name}</td>
-                        <td className="px-4 py-2.5 font-medium text-gray-900">{f.value ?? '—'}</td>
-                        <td className="px-4 py-2.5"><ValidationStatusBadge status={f.status} /></td>
-                        <td className="px-4 py-2.5 text-xs text-gray-500 max-w-xs">{f.ai_note ?? '—'}</td>
-                        <td className="px-4 py-2.5 text-right text-xs text-gray-500">
-                          {f.confidence !== null ? `${Math.round((f.confidence ?? 0) * 100)}%` : '—'}
-                        </td>
-                      </tr>
-                    )) : (
-                      <tr><td colSpan={5} className="px-4 py-4 text-sm text-gray-400 text-center">ไม่มีข้อมูลการตรวจสอบ</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                  )) : (
+                    <tr><td colSpan={5} className="px-4 py-4 text-sm text-gray-400 text-center">ไม่มีข้อมูล</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )
 
-              {/* Address fields */}
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ที่อยู่ปลายทาง</h3>
+            return (
+              <div className="space-y-4 pt-2">
+                {/* Divider */}
+                <div className="flex items-center gap-3">
+                  <div className="h-px flex-1 bg-gray-200" />
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    รายละเอียด — คำสั่งที่ {selectedOrderIdx + 1}: {selectedOrder.customer_name ?? '(ไม่มีชื่อ)'}
+                  </span>
+                  <AiStatusBadge status={selectedOrder.ai_status} />
+                  <div className="h-px flex-1 bg-gray-200" />
                 </div>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs text-gray-400 border-b border-gray-100">
-                      <th className="text-left px-4 py-2 font-medium">ฟิลด์</th>
-                      <th className="text-left px-4 py-2 font-medium">ค่า</th>
-                      <th className="text-left px-4 py-2 font-medium">สถานะ</th>
-                      <th className="text-left px-4 py-2 font-medium">หมายเหตุ AI</th>
-                      <th className="text-right px-4 py-2 font-medium">ความเชื่อมั่น</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {addressFields.length > 0 ? addressFields.map((f) => (
-                      <tr key={f.id} className="border-b border-gray-50 last:border-0">
-                        <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{FIELD_LABELS[f.field_name] ?? f.field_name}</td>
-                        <td className="px-4 py-2.5 font-medium text-gray-900">{f.value ?? '—'}</td>
-                        <td className="px-4 py-2.5"><ValidationStatusBadge status={f.status} /></td>
-                        <td className="px-4 py-2.5 text-xs text-gray-500 max-w-xs">{f.ai_note ?? '—'}</td>
-                        <td className="px-4 py-2.5 text-right text-xs text-gray-500">
-                          {f.confidence !== null ? `${Math.round((f.confidence ?? 0) * 100)}%` : '—'}
-                        </td>
-                      </tr>
-                    )) : (
-                      <tr><td colSpan={5} className="px-4 py-4 text-sm text-gray-400 text-center">ไม่มีข้อมูลที่อยู่</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
 
-              <div className="flex items-center justify-between pt-2">
-                <button
-                  onClick={() => setTab('geolocation')}
-                  className="text-sm font-medium text-[#185FA5] hover:underline"
-                >
-                  ดูที่อยู่และพิกัด →
-                </button>
-                <button
-                  onClick={() => setShowRaw((v) => !v)}
-                  className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-2 py-1"
-                >
-                  {showRaw ? 'ซ่อน' : 'ดู'} Raw Extraction
-                </button>
-              </div>
+                {/* Customer note */}
+                {note && (
+                  <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                    <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    <div>
+                      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">หมายเหตุจากผู้ส่ง</p>
+                      <p className="text-sm text-amber-900 leading-relaxed">{note}</p>
+                    </div>
+                  </div>
+                )}
 
-              {/* Raw extraction debug panel */}
-              {showRaw && selectedOrder && (
-                <div className="bg-gray-900 rounded-xl p-4 overflow-auto max-h-96">
-                  <p className="text-xs text-gray-400 mb-2 font-mono">Raw API response — order {selectedOrderIdx + 1}</p>
-                  <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
-                    {JSON.stringify(selectedOrder, null, 2)}
-                  </pre>
+                {/* Customer / circuit fields */}
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ข้อมูลลูกค้า / วงจร</h3>
+                  </div>
+                  <DetailTable rows={custFvs} />
                 </div>
-              )}
-            </div>
-          )}
+
+                {/* Address fields */}
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ที่อยู่ปลายทาง</h3>
+                  </div>
+                  <DetailTable rows={addrFvs} />
+                </div>
+
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setTab('geolocation')}
+                    className="text-sm font-medium text-[#185FA5] hover:underline"
+                  >
+                    ดูแผนที่และพิกัด →
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
-      {/* Geolocation tab */}
+      {/* ── Geolocation tab ── */}
       {tab === 'geolocation' && batch && (
         <div className="space-y-4">
-          {batch.orders.length > 1 && (
+          {orders.length > 1 && (
             <div className="flex gap-2 flex-wrap">
-              {batch.orders.map((o, i) => (
+              {orders.map((o, i) => (
                 <button
                   key={o.id}
-                  onClick={() => setSelectedOrderIdx(i)}
+                  onClick={() => selectOrder(i)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                    selectedOrderIdx === i
-                      ? 'text-white border-[#185FA5]'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-[#185FA5]'
+                    selectedOrderIdx === i ? 'text-white border-[#185FA5]' : 'bg-white text-gray-600 border-gray-200 hover:border-[#185FA5]'
                   }`}
                   style={selectedOrderIdx === i ? { backgroundColor: '#185FA5' } : {}}
                 >
@@ -375,38 +523,26 @@ export default function NewBatchClient() {
 
           {selectedOrder && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Address fields */}
               <div className="space-y-4">
                 <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-3">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-gray-700">ที่อยู่ติดตั้ง</h3>
-                    <span className="text-xs text-gray-400 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />แนะนำโดย AI
-                    </span>
+                    <AiStatusBadge status={selectedOrder.ai_status} />
                   </div>
                   {address ? (() => {
-                    // Build a lookup of field_name → validation for status indicators
-                    const fieldMap = Object.fromEntries(
-                      fieldValidations.map((f) => [f.field_name, f])
-                    )
-                    const addrFields: [string, string, string | null][] = [
-                      ['บ้านเลขที่', 'house_no', address.house_no],
-                      ['หมู่ที่', 'moo', address.moo],
-                      ['อาคาร', 'building', address.building],
-                      ['ชั้น', 'floor', address.floor],
-                      ['ห้อง', 'room', address.room],
-                      ['ซอย', 'soi', address.soi],
-                      ['ถนน', 'road', address.road],
-                      ['แขวง/ตำบล', 'subdistrict', address.subdistrict],
-                      ['เขต/อำเภอ', 'district', address.district],
-                      ['จังหวัด', 'province', address.province],
-                      ['รหัสไปรษณีย์', 'postcode', address.postcode],
+                    const fvMap = buildFvMap(fieldValidations)
+                    const addrFields: [string, keyof Address][] = [
+                      ['บ้านเลขที่', 'house_no'], ['หมู่ที่', 'moo'], ['อาคาร', 'building'],
+                      ['ชั้น', 'floor'], ['ห้อง', 'room'], ['ซอย', 'soi'], ['ถนน', 'road'],
+                      ['แขวง/ตำบล', 'subdistrict'], ['เขต/อำเภอ', 'district'],
+                      ['จังหวัด', 'province'], ['รหัสไปรษณีย์', 'postcode'],
                     ]
                     return (
                       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                        {addrFields.map(([label, key, value]) => {
-                          const v = fieldMap[key]
-                          const isSuggested = v?.status === 'suggested'
+                        {addrFields.map(([label, key]) => {
+                          const value = address[key]
+                          const v     = fvMap[key]
+                          const isSuggested  = v?.status === 'suggested'
                           const isSuspicious = v?.status === 'suspicious' || v?.status === 'incorrect'
                           return (
                             <div key={key}>
@@ -415,12 +551,8 @@ export default function NewBatchClient() {
                                 <span className={`font-medium ${value ? 'text-gray-900' : 'text-gray-300'}`}>
                                   {value ?? '—'}
                                 </span>
-                                {value && isSuggested && (
-                                  <span title={v?.ai_note ?? 'อนุมานโดย AI'} className="mt-0.5 w-2 h-2 rounded-full bg-blue-400 flex-shrink-0 cursor-help" />
-                                )}
-                                {value && isSuspicious && (
-                                  <span title={v?.ai_note ?? 'น่าสงสัย'} className="mt-0.5 w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0 cursor-help" />
-                                )}
+                                {value && isSuggested  && <span title={v?.ai_note ?? ''} className="mt-0.5 w-2 h-2 rounded-full bg-blue-400 flex-shrink-0 cursor-help" />}
+                                {value && isSuspicious && <span title={v?.ai_note ?? ''} className="mt-0.5 w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0 cursor-help" />}
                               </dd>
                               {v?.ai_note && (isSuggested || isSuspicious) && (
                                 <p className="text-xs text-gray-400 mt-0.5 leading-tight">{v.ai_note}</p>
@@ -430,9 +562,7 @@ export default function NewBatchClient() {
                         })}
                       </dl>
                     )
-                  })() : (
-                    <p className="text-sm text-gray-400">ไม่มีข้อมูลที่อยู่</p>
-                  )}
+                  })() : <p className="text-sm text-gray-400">ไม่มีข้อมูลที่อยู่</p>}
                 </div>
 
                 {address && (
@@ -453,9 +583,23 @@ export default function NewBatchClient() {
                     )}
                   </div>
                 )}
+
+                {/* Customer note */}
+                {(selectedOrder as RichOrder & { customer_note?: string }).customer_note && (
+                  <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                    <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    <div>
+                      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">หมายเหตุจากผู้ส่ง</p>
+                      <p className="text-sm text-amber-900 leading-relaxed">
+                        {(selectedOrder as RichOrder & { customer_note?: string }).customer_note}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Map */}
               <div>
                 {address?.latitude && address?.longitude ? (
                   <MapPreview lat={address.latitude} lng={address.longitude} />

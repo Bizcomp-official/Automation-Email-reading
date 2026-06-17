@@ -32,6 +32,7 @@ export interface Order {
   coordinator_name: string | null
   coordinator_phone: string | null
   source_ref: string | null
+  customer_note: string | null
   ai_status: AiStatus
   created_at: string
   address?: Address
@@ -92,6 +93,7 @@ export interface OrderListItem {
   province: string | null
   review_status: ReviewStatus
   email_from: string | null
+  customer_note: string | null
 }
 
 export interface SummaryStats {
@@ -140,6 +142,7 @@ export interface ClaudeOrder {
   branch_name?: string
   coordinator_name?: string
   coordinator_phone?: string
+  customer_note?: string | null
   address: ClaudeAddressField
   fields: ClaudeFieldValidation[]
   ai_status: AiStatus

@@ -171,6 +171,7 @@ export async function POST(req: NextRequest) {
         coordinator_name: o.coordinator_name ?? null,
         coordinator_phone: o.coordinator_phone ?? null,
         source_ref: o.source_ref ?? null,
+        customer_note: o.customer_note ?? null,
         // 'suggested' is only valid for field-level status, not the order overall
         ai_status: (['correct','missing','suspicious','incorrect'] as string[]).includes(o.ai_status)
           ? o.ai_status

@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   let query = supabase
     .from('orders')
     .select(
-      `id, seq, customer_name, company_name, ai_status, created_at,
+      `id, seq, customer_name, company_name, ai_status, created_at, customer_note,
        batch_id,
        batches!inner(batch_code, email_from),
        addresses(subdistrict, district, province, postcode),
@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
     address_summary: buildAddressSummary(o.addresses),
     province: o.addresses?.province ?? null,
     review_status: o.reviews?.is_status ?? 'pending',
+    customer_note: o.customer_note ?? null,
   }))
 
   if (status && status !== 'all') {

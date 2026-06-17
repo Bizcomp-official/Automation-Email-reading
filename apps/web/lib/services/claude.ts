@@ -182,6 +182,12 @@ Your job: read unstructured Thai telecom installation order data (email bodies, 
 ━━━ STEP 1: IDENTIFY ORDERS ━━━
 Each order is one installation circuit. There may be one or many. Each order has a customer, a circuit type, and a destination address.
 
+Also look for any special instructions, remarks, or notes related to the installation — these go in "customer_note". Examples:
+• Preferred installation time: "สะดวกให้เข้าติดตั้งในช่วงบ่าย", "นัดช่วงเช้า"
+• Access rules: "โทรแจ้งล่วงหน้าก่อนเข้าพื้นที่อย่างน้อย 1 ชั่วโมง", "แจ้ง รปภ. ก่อนเข้า"
+• Contact preferences or other remarks relevant to the installation team
+Set "customer_note" to null if no such instructions appear in the data.
+
 ━━━ STEP 2: EXTRACT ADDRESS — THIS IS THE MOST CRITICAL PART ━━━
 Every order MUST have a destination installation address. Search every column and every line of text.
 
@@ -263,6 +269,7 @@ no markdown outside the braces, no "I'll analyze..." text. Start your reply with
       "branch_name": "...",
       "coordinator_name": "...",
       "coordinator_phone": "...",
+      "customer_note": "ลูกค้าสะดวกให้เข้าติดตั้งในช่วงบ่าย และขอให้โทรแจ้งล่วงหน้าก่อนเข้าพื้นที่อย่างน้อย 1 ชั่วโมง",
       "address": {
         "house_no": "99/9",
         "moo": "3",

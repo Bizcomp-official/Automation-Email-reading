@@ -288,6 +288,14 @@ export default function HistoryClient() {
                       <td className="px-4 py-3">
                         <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
                         {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
+                        {row.customer_note && (
+                          <div className="flex items-center gap-1 mt-1">
+                            <svg className="w-3 h-3 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            <span className="text-xs text-amber-600 truncate max-w-[180px]">{row.customer_note}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{row.address_summary ?? '—'}</td>
                       <td className="px-4 py-3"><AiStatusBadge status={row.ai_status} /></td>
@@ -354,6 +362,20 @@ export default function HistoryClient() {
                 {/* ── Address tab ── */}
                 {drawerTab === 'address' && (
                   <div className="p-5 space-y-4">
+
+                    {/* Customer note */}
+                    {drawerOrder?.customer_note && (
+                      <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                        <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        <div>
+                          <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">หมายเหตุจากผู้ส่ง</p>
+                          <p className="text-sm text-amber-900 leading-relaxed">{drawerOrder.customer_note}</p>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="bg-gray-50 rounded-xl p-4">
                       <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">ที่อยู่ติดตั้ง</h3>
                       {drawerAddress ? (
