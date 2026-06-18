@@ -87,6 +87,7 @@ export default function NewBatchClient() {
   const [error, setError]                   = useState<string | null>(null)
   const [batch, setBatch]                   = useState<(Batch & { orders: Order[] }) | null>(null)
   const [selectedOrderIdx, setSelectedOrderIdx] = useState(0)
+  const [filterOrderIdx, setFilterOrderIdx] = useState<number | null>(null)
   const [showRaw, setShowRaw]               = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -104,7 +105,7 @@ export default function NewBatchClient() {
 
   const clearBatch = () => {
     setBatch(null); setFile(null); setError(null)
-    setSelectedOrderIdx(0); setShowRaw(false); setTab('upload')
+    setSelectedOrderIdx(0); setFilterOrderIdx(null); setShowRaw(false); setTab('upload')
     localStorage.removeItem(STORAGE_KEY)
   }
 
@@ -123,7 +124,7 @@ export default function NewBatchClient() {
     setLoading(true); setError(null)
     try {
       const result = await uploadBatch(file)
-      saveBatch(result); setSelectedOrderIdx(0); setShowRaw(false); setTab('extraction')
+      saveBatch(result); setSelectedOrderIdx(0); setFilterOrderIdx(null); setShowRaw(false); setTab('extraction')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'เกิดข้อผิดพลาด')
     } finally { setLoading(false) }
@@ -134,6 +135,7 @@ export default function NewBatchClient() {
   const address = selectedOrder ? unwrapAddr(selectedOrder) : undefined
   const fieldValidations = selectedOrder ? unwrapFv(selectedOrder) : []
   const hasNotes = orders.some((o) => (o as RichOrder & { customer_note?: string }).customer_note)
+  const visibleOrders = filterOrderIdx !== null ? orders.filter((_, i) => i === filterOrderIdx) : orders
 
   const selectOrder = (i: number, goGeo = false) => {
     setSelectedOrderIdx(i)
@@ -247,19 +249,56 @@ export default function NewBatchClient() {
       {tab === 'extraction' && batch && (
         <div className="space-y-4">
 
-          {/* Legend */}
-          <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
-            <span className="font-medium text-gray-600">สีเซลล์:</span>
-            {[
-              { cls: 'bg-white border border-gray-200',    label: 'ถูกต้อง' },
-              { cls: 'bg-red-50 text-red-700',             label: 'ไม่พบ / ผิด' },
-              { cls: 'bg-amber-50 text-amber-800',         label: 'น่าสงสัย' },
-              { cls: 'bg-blue-50 text-blue-800',           label: 'AI อนุมาน' },
-            ].map(({ cls, label }) => (
-              <span key={label} className={`px-2 py-0.5 rounded font-medium ${cls}`}>{label}</span>
-            ))}
-            <span className="ml-auto text-gray-400">คลิกแถวเพื่อดูรายละเอียด</span>
+          {/* Status guide */}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">คำอธิบายสถานะ</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2">
+              {[
+                { badgeCls: 'bg-green-100 text-green-800',   label: 'ถูกต้อง',     desc: 'AI สกัดข้อมูลได้ครบถ้วนและมั่นใจสูง' },
+                { badgeCls: 'bg-red-100 text-red-700',       label: 'ขาดข้อมูล',  desc: 'ไม่พบฟิลด์นี้ในอีเมล' },
+                { badgeCls: 'bg-yellow-100 text-yellow-800', label: 'น่าสงสัย',   desc: 'พบค่า แต่อาจไม่ถูกต้อง — ควรตรวจสอบ' },
+                { badgeCls: 'bg-red-100 text-red-700',       label: 'ไม่ถูกต้อง', desc: 'AI ตรวจพบว่าค่าน่าจะผิด' },
+                { badgeCls: 'bg-blue-100 text-blue-800',     label: 'AI แนะนำ',   desc: 'AI อนุมานค่านี้เอง — ไม่ได้ระบุไว้ชัดเจน' },
+                { badgeCls: 'bg-orange-100 text-orange-700', label: 'รอตรวจ',     desc: 'ยังไม่ได้รับการตรวจสอบจากผู้ใช้' },
+                { badgeCls: 'bg-green-100 text-green-800',   label: 'ยืนยันแล้ว', desc: 'ตรวจสอบแล้วและยืนยันว่าถูกต้อง' },
+                { badgeCls: 'bg-red-100 text-red-700',       label: 'ต้องแก้ไข',  desc: 'ถูกทำเครื่องหมายให้แก้ไขหรือติดตาม' },
+              ].map(({ badgeCls, label, desc }) => (
+                <div key={label} className="flex items-center gap-2">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${badgeCls}`}>{label}</span>
+                  <span className="text-xs text-gray-500">{desc}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-3">คลิกแถวในตารางเพื่อดูรายละเอียดคำสั่งนั้น</p>
           </div>
+
+          {/* Order filter selector — only shown when batch has multiple orders */}
+          {orders.length > 1 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500 font-medium">แสดงคำสั่ง:</span>
+              <button
+                onClick={() => setFilterOrderIdx(null)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  filterOrderIdx === null ? 'text-white border-[#185FA5]' : 'bg-white text-gray-600 border-gray-200 hover:border-[#185FA5]'
+                }`}
+                style={filterOrderIdx === null ? { backgroundColor: '#185FA5' } : {}}
+              >
+                ทั้งหมด ({orders.length})
+              </button>
+              {orders.map((o, i) => (
+                <button
+                  key={o.id}
+                  onClick={() => { setFilterOrderIdx(i); selectOrder(i) }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                    filterOrderIdx === i ? 'text-white border-[#185FA5]' : 'bg-white text-gray-600 border-gray-200 hover:border-[#185FA5]'
+                  }`}
+                  style={filterOrderIdx === i ? { backgroundColor: '#185FA5' } : {}}
+                >
+                  วงจร {i + 1}: {o.customer_name ?? '(ไม่มีชื่อ)'}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Spreadsheet */}
           <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
@@ -308,7 +347,8 @@ export default function NewBatchClient() {
                 </tr>
               </thead>
               <tbody>
-                {orders.map((order, i) => {
+                {visibleOrders.map((order) => {
+                  const i = orders.indexOf(order)
                   const fvMap = buildFvMap(unwrapFv(order))
                   const note  = (order as RichOrder & { customer_note?: string }).customer_note
                   const isSelected = selectedOrderIdx === i
@@ -379,7 +419,7 @@ export default function NewBatchClient() {
           {/* Footer row */}
           <div className="flex items-center justify-between pt-1">
             <p className="text-xs text-gray-400">
-              {orders.length} คำสั่ง · วางเมาส์เหนือเซลล์เพื่อดูหมายเหตุ AI · คลิกแถวเพื่อเลือกและดูรายละเอียด
+              {filterOrderIdx !== null ? `แสดง 1 จาก ${orders.length} คำสั่ง` : `${orders.length} คำสั่ง`} · วางเมาส์เหนือเซลล์เพื่อดูหมายเหตุ AI · คลิกแถวเพื่อเลือกและดูรายละเอียด
             </p>
             <button
               onClick={() => setShowRaw((v) => !v)}
