@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
 
   let parsed
   try {
-    parsed = await parseEmailBuffer(buffer)
+    parsed = await parseEmailBuffer(buffer, file.name)
   } catch (err) {
     console.error('[batches] email parse error:', err)
     return NextResponse.json({ error: 'Failed to parse email', detail: String(err) }, { status: 422 })
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error('[batches] extraction failed:', String(err))
     await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
-    return NextResponse.json({ error: 'Gemini extraction failed', detail: String(err) }, { status: 502 })
+    return NextResponse.json({ error: 'Claude extraction failed', detail: String(err) }, { status: 502 })
   }
 
   const createdOrders = []
