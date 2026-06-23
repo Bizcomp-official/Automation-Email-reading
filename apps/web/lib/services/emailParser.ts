@@ -1,9 +1,17 @@
 import { simpleParser } from 'mailparser'
 import * as XLSX from 'xlsx'
-// msgreader is loaded dynamically so the import doesn't fail if it isn't installed yet
+
+// msgreader handles Outlook's proprietary .msg binary format.
+// Loaded dynamically so the server still starts if the package isn't installed yet.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let MsgReader: any = null
-try { MsgReader = require('msgreader').default ?? require('msgreader') } catch { /* not installed */ }
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('msgreader')
+  MsgReader = mod.default ?? mod
+} catch {
+  /* will surface a clear error at upload time */
+}
 
 export interface ParsedEmail {
   subject: string
@@ -17,29 +25,36 @@ export interface ParsedEmail {
 
 async function parseMsgBuffer(buffer: Buffer): Promise<ParsedEmail> {
   if (!MsgReader) {
-    throw new Error('.msg files require the "msgreader" package — run: npm install msgreader --workspace=apps/web')
+    throw new Error(
+      'ไม่พบ package msgreader — กรุณารันคำสั่ง: npm install msgreader --workspace=apps/web แล้ว restart server'
+    )
   }
+
   const reader = new MsgReader(buffer)
   const msg = reader.getFileData()
 
-  const subject = msg.subject ?? ''
-  const from = msg.senderEmail
+  const subject: string = msg.subject ?? ''
+  const from: string = msg.senderEmail
     ? `${msg.senderName ?? ''} <${msg.senderEmail}>`.trim()
     : (msg.senderName ?? '')
-  const bodyText = msg.body ?? msg.bodyHtml?.replace(/<[^>]+>/g, ' ') ?? ''
+
+  // Prefer plain text body; strip HTML tags as fallback
+  const bodyText: string =
+    msg.body ??
+    (msg.bodyHtml ? (msg.bodyHtml as string).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
 
   let excelRows = ''
   let rawExcelRows: Record<string, unknown>[] = []
 
-  for (const att of msg.attachments ?? []) {
+  for (const att of (msg.attachments ?? []) as Array<{ fileName?: string }>) {
     const name = (att.fileName ?? '').toLowerCase()
     if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
       const attData = reader.getAttachment(att)
       if (attData?.content) {
-        const result = parseExcelBuffer(Buffer.from(attData.content))
+        const result = parseExcelBuffer(Buffer.from(attData.content as ArrayBuffer))
         excelRows = result.text
         rawExcelRows = result.rows
-        console.log(`[emailParser/msg] found attachment: ${att.fileName}, rows: ${rawExcelRows.length}`)
+        console.log(`[emailParser/msg] attachment: ${att.fileName}, rows: ${rawExcelRows.length}`)
         break
       }
     }

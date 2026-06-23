@@ -118,7 +118,8 @@ export async function POST(req: NextRequest) {
     parsed = await parseEmailBuffer(buffer, file.name)
   } catch (err) {
     console.error('[batches] email parse error:', err)
-    return NextResponse.json({ error: 'Failed to parse email', detail: String(err) }, { status: 422 })
+    const detail = String(err).replace(/^Error:\s*/, '')
+    return NextResponse.json({ error: detail || 'Failed to parse email' }, { status: 422 })
   }
 
   console.log('[batches] parsed — subject:', parsed.subject, '| bodyLen:', parsed.bodyText.length, '| excelRows:', parsed.rawExcelRows.length)
