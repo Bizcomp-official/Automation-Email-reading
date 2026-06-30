@@ -190,6 +190,7 @@ export default function NewBatchClient() {
         <ExtractionTab
           key={batch.id}
           orders={orders}
+          aeEmail={batch.email_from ?? ''}
           onSelectOrder={setSelectedOrderIdx}
         />
       )}
@@ -294,13 +295,15 @@ export default function NewBatchClient() {
               </div>
 
               <div>
-                {address?.latitude && address?.longitude ? (
-                  <MapPreview lat={address.latitude} lng={address.longitude} />
-                ) : (
-                  <div className="rounded-xl border-2 border-dashed border-gray-200 h-64 flex items-center justify-center">
-                    <p className="text-sm text-gray-400">ไม่มีพิกัด GPS</p>
-                  </div>
-                )}
+                <MapPreview
+                  lat={address?.latitude}
+                  lng={address?.longitude}
+                  noCoordReason={(() => {
+                    const latFv = fieldValidations.find(f => f.field_name === 'latitude')
+                    if (latFv?.status === 'correct' && latFv?.ai_note?.includes('สำนักงาน')) return 'office'
+                    return 'missing'
+                  })()}
+                />
               </div>
             </div>
           )}

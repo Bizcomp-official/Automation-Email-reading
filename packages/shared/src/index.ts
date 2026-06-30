@@ -117,17 +117,19 @@ export interface ClaudeAddressField {
   district?: string
   province?: string
   postcode?: string
-  latitude?: number
-  longitude?: number
+  latitude?: number | string | null
+  longitude?: number | string | null
   input_format?: InputFormat
+  is_office_known_location?: boolean
 }
 
 export interface ClaudeFieldValidation {
   field_name: string
-  value: string
+  value: string | null
   status: ValidationStatus
   ai_note: string
   confidence: number
+  corrected_value?: string | null
 }
 
 export interface ClaudeOrder {

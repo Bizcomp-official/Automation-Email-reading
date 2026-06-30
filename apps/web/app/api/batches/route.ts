@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 600 // seconds — 260-row files need ~13 Claude batches × ~15s each
 
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/services/supabase'
@@ -74,13 +75,27 @@ function buildCompleteValidations(o: ClaudeOrder): ClaudeFieldValidation[] {
   }
 
   // Address fields
+  const isOffice = o.address?.is_office_known_location === true
   for (const { key } of ADDRESS_FIELDS) {
     if (explicit.has(key)) {
       result.push(explicit.get(key)!)
       continue
     }
     const raw = o.address?.[key as keyof typeof o.address]
-    const value = raw != null ? String(raw) : undefined
+    const value = raw != null && raw !== false ? String(raw) : undefined
+
+    // lat/lng get special treatment: office = correct (no GPS needed), else missing
+    if ((key === 'latitude' || key === 'longitude') && !value) {
+      result.push({
+        field_name: key,
+        value: '',
+        status: (isOffice ? 'correct' : 'missing') as ValidationStatus,
+        ai_note: isOffice ? 'สำนักงาน – ทราบตำแหน่งแล้ว ไม่ต้องการพิกัด GPS' : 'ต้องการพิกัด GPS จาก AE',
+        confidence: isOffice ? 1 : 0,
+      })
+      continue
+    }
+
     result.push({
       field_name: key,
       value: value ?? '',
@@ -139,26 +154,25 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (batchErr || !batch) {
-    console.error('[batches] Supabase insert error:', batchErr)
+    console.error('[batches] Supabase insert error:', batchErr?.message, batchErr?.code, batchErr?.details, batchErr?.hint)
     return NextResponse.json({ error: 'Failed to create batch', detail: batchErr?.message }, { status: 500 })
   }
 
   let extraction
   try {
-    extraction = await extractOrdersFromEmail(parsed.bodyText, parsed.excelRows)
+    extraction = await extractOrdersFromEmail(parsed.bodyText, parsed.excelRows, parsed.rawExcelRows)
   } catch (err) {
     console.error('[batches] extraction failed:', String(err))
     await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
     return NextResponse.json({ error: 'Claude extraction failed', detail: String(err) }, { status: 502 })
   }
 
-  const createdOrders = []
-  for (let i = 0; i < extraction.orders.length; i++) {
-    const o: ClaudeOrder = extraction.orders[i]
-
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .insert({
+  // Bulk insert all orders in one round-trip
+  const validAiStatuses = ['correct', 'missing', 'suspicious', 'incorrect']
+  const { data: createdOrders, error: ordersErr } = await supabase
+    .from('orders')
+    .insert(
+      extraction.orders.map((o, i) => ({
         batch_id: batch.id,
         seq: i + 1,
         customer_name: o.customer_name ?? null,
@@ -173,61 +187,64 @@ export async function POST(req: NextRequest) {
         coordinator_phone: o.coordinator_phone ?? null,
         source_ref: o.source_ref ?? null,
         customer_note: o.customer_note ?? null,
-        // 'suggested' is only valid for field-level status, not the order overall
-        ai_status: (['correct','missing','suspicious','incorrect'] as string[]).includes(o.ai_status)
-          ? o.ai_status
-          : 'suspicious',
-      })
-      .select()
-      .single()
-
-    if (orderErr || !order) {
-      console.error('[batches] order insert error:', orderErr)
-      continue
-    }
-
-    await supabase.from('addresses').insert({
-      order_id: order.id,
-      house_no: o.address?.house_no ?? null,
-      moo: o.address?.moo ?? null,
-      building: o.address?.building ?? null,
-      floor: o.address?.floor ?? null,
-      room: o.address?.room ?? null,
-      soi: o.address?.soi ?? null,
-      road: o.address?.road ?? null,
-      subdistrict: o.address?.subdistrict ?? null,
-      district: o.address?.district ?? null,
-      province: o.address?.province ?? null,
-      postcode: o.address?.postcode ?? null,
-      latitude: o.address?.latitude ?? null,
-      longitude: o.address?.longitude ?? null,
-      input_format: o.address?.input_format ?? 'plain_text',
-      geocode_confidence: null,
-    })
-
-    // Build complete validations — every field gets a row
-    const allValidations = buildCompleteValidations(o)
-    await supabase.from('field_validations').insert(
-      allValidations.map((f) => ({
-        order_id: order.id,
-        field_name: f.field_name,
-        value: f.value ?? null,
-        status: f.status,
-        ai_note: f.ai_note ?? null,
-        confidence: f.confidence ?? null,
+        ai_status: validAiStatuses.includes(o.ai_status) ? o.ai_status : 'suspicious',
       })),
     )
+    .select()
 
-    await supabase.from('reviews').insert({
-      order_id: order.id,
-      is_status: 'pending',
-      reviewer: null,
-      note: null,
-      reviewed_at: null,
-    })
-
-    createdOrders.push(order.id)
+  if (ordersErr || !createdOrders?.length) {
+    console.error('[batches] orders bulk insert error:', ordersErr?.message, ordersErr?.code)
+    await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
+    return NextResponse.json({ error: 'Failed to insert orders', detail: ordersErr?.message }, { status: 500 })
   }
+
+  // Bulk insert addresses, field_validations, reviews — all in parallel
+  await Promise.all([
+    supabase.from('addresses').insert(
+      createdOrders.map((order, i) => {
+        const addr = extraction.orders[i].address
+        return {
+          order_id: order.id,
+          house_no: addr?.house_no ?? null,
+          moo: addr?.moo ?? null,
+          building: addr?.building ?? null,
+          floor: addr?.floor ?? null,
+          room: addr?.room ?? null,
+          soi: addr?.soi ?? null,
+          road: addr?.road ?? null,
+          subdistrict: addr?.subdistrict ?? null,
+          district: addr?.district ?? null,
+          province: addr?.province ?? null,
+          postcode: addr?.postcode ?? null,
+          latitude: addr?.latitude ?? null,
+          longitude: addr?.longitude ?? null,
+          input_format: addr?.input_format ?? 'plain_text',
+          geocode_confidence: null,
+        }
+      }),
+    ),
+    supabase.from('field_validations').insert(
+      createdOrders.flatMap((order, i) =>
+        buildCompleteValidations(extraction.orders[i]).map((f) => ({
+          order_id: order.id,
+          field_name: f.field_name,
+          value: f.value ?? null,
+          status: f.status,
+          ai_note: f.ai_note ?? null,
+          confidence: f.confidence ?? null,
+        })),
+      ),
+    ),
+    supabase.from('reviews').insert(
+      createdOrders.map((order) => ({
+        order_id: order.id,
+        is_status: 'pending',
+        reviewer: null,
+        note: null,
+        reviewed_at: null,
+      })),
+    ),
+  ])
 
   await supabase.from('batches').update({ status: 'done' }).eq('id', batch.id)
 

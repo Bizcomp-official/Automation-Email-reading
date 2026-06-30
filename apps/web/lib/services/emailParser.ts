@@ -9,6 +9,15 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('msgreader')
   MsgReader = mod.default ?? mod
+
+  // msgreader v1.x only maps PR_BODY (0x1000, plain text). Patch its const to also
+  // extract PR_BODY_HTML (0x1013) so HTML-formatted Outlook emails aren't silently dropped.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const msgConst = require('msgreader/lib/const')
+  const nameMapping = msgConst?.default?.MSG?.FIELD?.NAME_MAPPING
+  if (nameMapping && !nameMapping['1013']) {
+    nameMapping['1013'] = 'bodyHtml'
+  }
 } catch {
   /* will surface a clear error at upload time */
 }
@@ -33,29 +42,47 @@ async function parseMsgBuffer(buffer: Buffer): Promise<ParsedEmail> {
   const reader = new MsgReader(buffer)
   const msg = reader.getFileData()
 
-  const subject: string = msg.subject ?? ''
-  const from: string = msg.senderEmail
-    ? `${msg.senderName ?? ''} <${msg.senderEmail}>`.trim()
-    : (msg.senderName ?? '')
+  // msgreader can return string (unicode) or Uint8Array (binary) depending on MAPI type
+  const toStr = (s: unknown): string => {
+    if (typeof s === 'string') return s.replace(/\0/g, '').trim()
+    if (s instanceof Uint8Array || Buffer.isBuffer(s)) return Buffer.from(s).toString('utf8').replace(/\0/g, '').trim()
+    return ''
+  }
+  const stripHtml = (s: unknown): string =>
+    toStr(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
-  // Prefer plain text body; strip HTML tags as fallback
-  const bodyText: string =
-    msg.body ??
-    (msg.bodyHtml ? (msg.bodyHtml as string).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
+  const subject: string = toStr(msg.subject)
+  const from: string = msg.senderEmail
+    ? `${toStr(msg.senderName)} <${toStr(msg.senderEmail)}>`.trim()
+    : toStr(msg.senderName)
+
+  // Prefer plain text; fall back to stripped HTML
+  const bodyText: string = toStr(msg.body) || stripHtml(msg.bodyHtml)
+
+  console.log('[emailParser/msg] raw fields:', {
+    hasBody: !!msg.body, bodyLen: toStr(msg.body).length,
+    hasBodyHtml: !!msg.bodyHtml, bodyHtmlLen: toStr(msg.bodyHtml).length,
+    bodyTextLen: bodyText.length,
+    attachCount: (msg.attachments ?? []).length,
+  })
 
   let excelRows = ''
   let rawExcelRows: Record<string, unknown>[] = []
 
   for (const att of (msg.attachments ?? []) as Array<{ fileName?: string }>) {
-    const name = (att.fileName ?? '').toLowerCase()
+    const name = toStr(att.fileName).toLowerCase()
     if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
       const attData = reader.getAttachment(att)
       if (attData?.content) {
-        const result = parseExcelBuffer(Buffer.from(attData.content as ArrayBuffer))
-        excelRows = result.text
-        rawExcelRows = result.rows
-        console.log(`[emailParser/msg] attachment: ${att.fileName}, rows: ${rawExcelRows.length}`)
-        break
+        try {
+          const result = parseExcelBuffer(Buffer.from(attData.content as ArrayBuffer))
+          excelRows = result.text
+          rawExcelRows = result.rows
+          console.log(`[emailParser/msg] attachment: ${name}, rows: ${rawExcelRows.length}`)
+          break
+        } catch (err) {
+          console.warn(`[emailParser/msg] skipping attachment "${name}" — parse failed: ${String(err)}`)
+        }
       }
     }
   }

@@ -407,26 +407,36 @@ export default function HistoryClient() {
                     </div>
 
                     {/* GPS */}
-                    {drawerAddress && (drawerAddress.latitude || drawerAddress.longitude) && (
+                    {drawerAddress && (
                       <div className="bg-gray-50 rounded-xl p-4">
                         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">พิกัด GPS</h3>
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <dt className="text-xs text-gray-400">ละติจูด</dt>
-                            <dd className="font-mono font-medium text-gray-900">{drawerAddress.latitude ?? '—'}</dd>
+                        {drawerAddress.latitude && drawerAddress.longitude ? (
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <dt className="text-xs text-gray-400">ละติจูด</dt>
+                              <dd className="font-mono font-medium text-gray-900">{drawerAddress.latitude}</dd>
+                            </div>
+                            <div>
+                              <dt className="text-xs text-gray-400">ลองจิจูด</dt>
+                              <dd className="font-mono font-medium text-gray-900">{drawerAddress.longitude}</dd>
+                            </div>
                           </div>
-                          <div>
-                            <dt className="text-xs text-gray-400">ลองจิจูด</dt>
-                            <dd className="font-mono font-medium text-gray-900">{drawerAddress.longitude ?? '—'}</dd>
-                          </div>
-                        </div>
+                        ) : (
+                          <p className="text-sm text-gray-500">สำนักงาน – ทราบตำแหน่งแล้ว</p>
+                        )}
                       </div>
                     )}
 
                     {/* Map */}
-                    {drawerAddress?.latitude && drawerAddress?.longitude && (
-                      <MapPreview lat={drawerAddress.latitude} lng={drawerAddress.longitude} />
-                    )}
+                    <MapPreview
+                      lat={drawerAddress?.latitude}
+                      lng={drawerAddress?.longitude}
+                      noCoordReason={(() => {
+                        const latFv = drawerValidations.find(f => f.field_name === 'latitude')
+                        if (latFv?.status === 'correct' && latFv?.ai_note?.includes('สำนักงาน')) return 'office'
+                        return 'missing'
+                      })()}
+                    />
                   </div>
                 )}
 

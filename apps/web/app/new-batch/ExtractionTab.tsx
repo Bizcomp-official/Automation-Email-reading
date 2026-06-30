@@ -53,7 +53,7 @@ const CUSTOMER_FIELD_DEFS: { key: string; label: string; required: boolean }[] =
   { key: 'coordinator_phone',  label: 'เบอร์ติดต่อ',    required: true  },
 ]
 
-const ADDRESS_FIELD_DEFS: { key: string; label: string; optional?: boolean }[] = [
+const ADDRESS_FIELD_DEFS: { key: string; label: string; optional?: boolean; required?: boolean }[] = [
   { key: 'house_no',    label: 'บ้านเลขที่' },
   { key: 'moo',         label: 'หมู่ที่',            optional: true },
   { key: 'building',    label: 'อาคาร/หมู่บ้าน',   optional: true },
@@ -65,8 +65,8 @@ const ADDRESS_FIELD_DEFS: { key: string; label: string; optional?: boolean }[] =
   { key: 'district',    label: 'เขต/อำเภอ' },
   { key: 'province',    label: 'จังหวัด' },
   { key: 'postcode',    label: 'รหัสไปรษณีย์' },
-  { key: 'latitude',    label: 'ละติจูด' },
-  { key: 'longitude',   label: 'ลองจิจูด' },
+  { key: 'latitude',    label: 'ละติจูด',   required: true },
+  { key: 'longitude',   label: 'ลองจิจูด',  required: true },
 ]
 
 const ADDR_SPLIT_KEYS = new Set(['house_no','moo','building','floor','room','soi','road','subdistrict','district','province','postcode'])
@@ -207,15 +207,20 @@ function buildCircuits(orders: RichOrder[]): CircuitData[] {
       const fv = fvMap[def.key]
       const value = (fv?.value ?? addrVal(def.key)).trim()
       const hasValue = value.length > 0
+      // lat/lng marked "correct" with office note = office site, treat as not required
+      const isOfficeLat = (def.key === 'latitude' || def.key === 'longitude')
+        && fv?.status === 'correct'
+        && fv?.ai_note?.includes('สำนักงาน')
+      const required = !!def.required && !isOfficeLat
       return {
         key: def.key,
         label: def.label,
         value,
         source: hasValue ? (fv?.status === 'suggested' ? 'ai' : 'address') : null,
-        status: mapStatus(fv?.status, false, hasValue),
+        status: mapStatus(fv?.status, required, hasValue),
         note: fv?.ai_note ?? '',
         confidence: fv?.confidence ?? null,
-        required: false,
+        required,
       }
     })
 
@@ -411,10 +416,13 @@ function DetailTable({ fields, onSaveField }: { fields: RichField[]; onSaveField
 
 // ── AE email request box ──────────────────────────────────────────────────────
 
-function AeEmailBox({ circuit, onSent }: { circuit: CircuitData; onSent: () => void }) {
+function AeEmailBox({ circuit, onSent, aeEmail }: { circuit: CircuitData; onSent: () => void; aeEmail?: string }) {
   const [open, setOpen] = useState(false)
   const missing = [...circuit.customerFields, ...circuit.addressFields].filter(f => f.required && f.status === 'missing')
   if (missing.length === 0) return null
+
+  const missingGps = missing.some(f => f.key === 'latitude' || f.key === 'longitude')
+  const missingOther = missing.filter(f => f.key !== 'latitude' && f.key !== 'longitude')
 
   const subject = `ขอข้อมูลเพิ่มเติม – ${missing.map(f => f.label).join(', ')} (FC ${circuit.company})`
   const body = `เรียน ${circuit.ae || '[ชื่อ AE]'},
@@ -422,7 +430,7 @@ function AeEmailBox({ circuit, onSent }: { circuit: CircuitData; onSent: () => v
 ที่ต้องกรอกใน Check Fact ก่อนส่งเข้าระบบ E-Ordering
 
 ข้อมูลที่ขาด:
-${missing.map(f => `• ${f.label}`).join('\n')}
+${missingOther.map(f => `• ${f.label}`).join('\n')}${missingGps ? `${missingOther.length ? '\n' : ''}• พิกัด GPS (ละติจูด / ลองจิจูด) — กรุณาแชร์ลิงก์ Google Maps หรือระบุค่าพิกัดของสถานที่ติดตั้ง` : ''}
 
 เมื่อได้รับแล้วจะดำเนินการส่ง FC เข้าระบบและแจ้งเลข FC No. กลับให้ทันทีค่ะ
 
@@ -440,7 +448,13 @@ Inside Sales`
           <button onClick={() => setOpen(v => !v)} className="text-xs px-3 py-1.5 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-100 transition-colors">
             {open ? 'ซ่อนอีเมล' : 'ดูอีเมล'}
           </button>
-          <button onClick={onSent} className="text-xs px-3 py-1.5 rounded-lg bg-rose-700 text-white hover:bg-rose-800 transition-colors">
+          <button
+            onClick={() => {
+              window.open(`mailto:${encodeURIComponent(aeEmail ?? '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`)
+              onSent()
+            }}
+            className="text-xs px-3 py-1.5 rounded-lg bg-rose-700 text-white hover:bg-rose-800 transition-colors"
+          >
             {circuit.aeSentAt ? 'ส่งซ้ำ' : 'ส่งอีเมล'}
           </button>
         </div>
@@ -489,11 +503,13 @@ function CircuitDetailView({
   onSaveField,
   onAeSent,
   allCircuits,
+  aeEmail,
 }: {
   circuit: CircuitData
   onSaveField: (key: string, value: string) => void
   onAeSent: () => void
   allCircuits: CircuitData[]
+  aeEmail?: string
 }) {
   const visibleAddr = circuit.addressFields.filter(f => {
     if (!f.key.match(/^(moo|building|floor|room|soi)$/)) return true
@@ -539,7 +555,7 @@ function CircuitDetailView({
         </div>
       )}
 
-      <AeEmailBox circuit={circuit} onSent={onAeSent} />
+      <AeEmailBox circuit={circuit} onSent={onAeSent} aeEmail={aeEmail} />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
@@ -709,9 +725,11 @@ type FilterChip = 'ทั้งหมด' | 'ต้องตรวจ' | 'รอ
 
 export default function ExtractionTab({
   orders,
+  aeEmail,
   onSelectOrder,
 }: {
   orders: RichOrder[]
+  aeEmail?: string
   onSelectOrder: (idx: number) => void
 }) {
   const [circuits, setCircuits] = useState<CircuitData[]>(() => buildCircuits(orders))
@@ -830,6 +848,7 @@ export default function ExtractionTab({
             onSaveField={(key, value) => saveField(activeCircuit.idx, key, value)}
             onAeSent={() => markAeSent(activeCircuit.idx)}
             allCircuits={circuits}
+            aeEmail={aeEmail}
           />
         ) : null}
       </div>
