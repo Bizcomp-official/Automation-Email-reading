@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
 
 const NAV = [
   {
@@ -21,6 +22,16 @@ const NAV = [
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
+    href: '/pending-emails',
+    label: 'Pending Emails',
+    sublabel: 'อีเมลที่ต้องส่ง AE',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
       </svg>
     ),
   },
@@ -49,6 +60,14 @@ const NAV = [
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const [pendingCount, setPendingCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    fetch('/api/pending-emails')
+      .then(r => r.json())
+      .then(d => setPendingCount(d.total ?? 0))
+      .catch(() => {})
+  }, [])
 
   return (
     <aside className="w-64 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0">
@@ -83,8 +102,15 @@ export default function Sidebar() {
               style={active ? { backgroundColor: '#185FA5' } : {}}
             >
               <span className={active ? 'text-white' : 'text-gray-400'}>{item.icon}</span>
-              <div>
-                <div className="text-sm font-medium leading-tight">{item.label}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium leading-tight">{item.label}</span>
+                  {item.href === '/pending-emails' && pendingCount != null && pendingCount > 0 && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold ${active ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-700'}`}>
+                      {pendingCount}
+                    </span>
+                  )}
+                </div>
                 <div className={`text-xs mt-0.5 ${active ? 'text-blue-200' : 'text-gray-400'}`}>{item.sublabel}</div>
               </div>
             </Link>
