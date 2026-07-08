@@ -414,59 +414,105 @@ function DetailTable({ fields, onSaveField }: { fields: RichField[]; onSaveField
   )
 }
 
-// ── AE email request box ──────────────────────────────────────────────────────
+// ── Build consolidated AE email for all รอ AE circuits ────────────────────────
 
-function AeEmailBox({ circuit, onSent, aeEmail }: { circuit: CircuitData; onSent: () => void; aeEmail?: string }) {
-  const [open, setOpen] = useState(false)
-  const missing = [...circuit.customerFields, ...circuit.addressFields].filter(f => f.required && f.status === 'missing')
-  if (missing.length === 0) return null
+function buildConsolidatedEmail(aeCircuits: CircuitData[], aeEmail: string) {
+  const ae = aeCircuits[0]?.ae || '[ชื่อ AE]'
 
-  const missingGps = missing.some(f => f.key === 'latitude' || f.key === 'longitude')
-  const missingOther = missing.filter(f => f.key !== 'latitude' && f.key !== 'longitude')
+  const siteBlocks = aeCircuits.map((c, i) => {
+    const missing = [...c.customerFields, ...c.addressFields].filter(f => f.required && f.status === 'missing')
+    const hasGps = missing.some(f => f.key === 'latitude' || f.key === 'longitude')
+    const others = missing.filter(f => f.key !== 'latitude' && f.key !== 'longitude')
+    const lines = [
+      ...others.map(f => `  • ${f.label}`),
+      ...(hasGps ? ['  • พิกัด GPS (ละติจูด / ลองจิจูด) — กรุณาแชร์ลิงก์ Google Maps หรือระบุค่าพิกัดของสถานที่ติดตั้ง'] : []),
+    ]
+    return `【 Site ${i + 1} 】 ${c.company}\n${lines.join('\n')}`
+  })
 
-  const subject = `ขอข้อมูลเพิ่มเติม – ${missing.map(f => f.label).join(', ')} (FC ${circuit.company})`
-  const body = `เรียน ${circuit.ae || '[ชื่อ AE]'},
-รบกวนขอข้อมูลเพิ่มเติมของลูกค้า ${circuit.company} ค่ะ เนื่องจากเป็นข้อมูลจำเป็น (required)
-ที่ต้องกรอกใน Check Fact ก่อนส่งเข้าระบบ E-Ordering
+  const subject = `ขอข้อมูลเพิ่มเติม FC – ${aeCircuits.length} sites (${aeCircuits.map(c => c.company).join(', ')})`
+  const body = `เรียน ${ae},
+รบกวนขอข้อมูลเพิ่มเติมสำหรับ FC จำนวน ${aeCircuits.length} sites ค่ะ เนื่องจากข้อมูลด้านล่างเป็นข้อมูลจำเป็น (required) ที่ต้องกรอกใน Check Fact ก่อนส่งเข้าระบบ E-Ordering
 
-ข้อมูลที่ขาด:
-${missingOther.map(f => `• ${f.label}`).join('\n')}${missingGps ? `${missingOther.length ? '\n' : ''}• พิกัด GPS (ละติจูด / ลองจิจูด) — กรุณาแชร์ลิงก์ Google Maps หรือระบุค่าพิกัดของสถานที่ติดตั้ง` : ''}
+${siteBlocks.join('\n\n')}
 
-เมื่อได้รับแล้วจะดำเนินการส่ง FC เข้าระบบและแจ้งเลข FC No. กลับให้ทันทีค่ะ
+กรุณาส่งข้อมูลกลับมาเพื่อดำเนินการส่ง FC เข้าระบบและจะแจ้งเลข FC No. กลับให้ทันทีค่ะ
 
 ขอบคุณค่ะ
 Inside Sales`
 
+  return { subject, body, aeEmail }
+}
+
+// ── Consolidated email button (shown instead of Export when รอ AE exists) ──────
+
+function ConsolidatedEmailButton({ aeCircuits, aeEmail }: { aeCircuits: CircuitData[]; aeEmail: string }) {
+  const [open, setOpen] = useState(false)
+  const [sent, setSent] = useState(false)
+  const { subject, body } = buildConsolidatedEmail(aeCircuits, aeEmail)
+
+  const handleSend = () => {
+    window.open(`mailto:${encodeURIComponent(aeEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`)
+    setSent(true)
+  }
+
   return (
-    <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-rose-800">ต้องขอข้อมูลจาก AE — {missing.length} ฟิลด์ขาด</p>
-          <p className="text-xs text-rose-600 mt-0.5">{missing.map(f => f.label).join(' · ')}</p>
-        </div>
-        <div className="flex gap-2 flex-shrink-0">
-          <button onClick={() => setOpen(v => !v)} className="text-xs px-3 py-1.5 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-100 transition-colors">
-            {open ? 'ซ่อนอีเมล' : 'ดูอีเมล'}
-          </button>
-          <button
-            onClick={() => {
-              window.open(`mailto:${encodeURIComponent(aeEmail ?? '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`)
-              onSent()
-            }}
-            className="text-xs px-3 py-1.5 rounded-lg bg-rose-700 text-white hover:bg-rose-800 transition-colors"
-          >
-            {circuit.aeSentAt ? 'ส่งซ้ำ' : 'ส่งอีเมล'}
-          </button>
-        </div>
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-sm font-medium hover:bg-rose-100 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+          </svg>
+          {open ? 'ซ่อนอีเมล' : 'ดูอีเมล'}
+          <span className="text-xs bg-rose-200 text-rose-800 px-1.5 py-0.5 rounded-full font-semibold">{aeCircuits.length} sites</span>
+          {sent && <span className="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded-full">ส่งแล้ว</span>}
+        </button>
       </div>
-      {circuit.aeSentAt && (
-        <p className="text-xs text-rose-500">ส่งแล้วเมื่อ {circuit.aeSentAt}</p>
-      )}
+
       {open && (
-        <div className="bg-white rounded-lg border border-rose-200 p-3 space-y-1">
-          <p className="text-xs text-gray-500 font-medium mb-1">Subject: {subject}</p>
-          <pre className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed font-sans">{body}</pre>
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 space-y-3">
+          <div className="bg-white rounded-lg border border-rose-100 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-medium text-gray-600">ถึง:</span>
+              <span className="text-gray-800">{aeEmail || '(ไม่มีอีเมล AE)'}</span>
+            </div>
+            <div className="flex items-start gap-2 text-xs">
+              <span className="font-medium text-gray-600 flex-shrink-0">Subject:</span>
+              <span className="text-gray-800">{subject}</span>
+            </div>
+            <div className="border-t border-gray-100 pt-2">
+              <pre className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed font-sans">{body}</pre>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={handleSend}
+              className="text-sm px-4 py-2 rounded-lg bg-rose-700 text-white hover:bg-rose-800 transition-colors"
+            >
+              {sent ? 'ส่งซ้ำ' : 'เปิดอีเมล'}
+            </button>
+          </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── AE email request box (per-circuit, shown in detail view) ──────────────────
+
+function AeEmailBox({ circuit }: { circuit: CircuitData }) {
+  const missing = [...circuit.customerFields, ...circuit.addressFields].filter(f => f.required && f.status === 'missing')
+  if (missing.length === 0) return null
+
+  return (
+    <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+      <p className="text-sm font-semibold text-rose-800">รอ AE — {missing.length} ฟิลด์ขาด</p>
+      <p className="text-xs text-rose-600 mt-0.5">{missing.map(f => f.label).join(' · ')}</p>
+      {circuit.aeSentAt && (
+        <p className="text-xs text-rose-400 mt-1">ส่งแล้วเมื่อ {circuit.aeSentAt}</p>
       )}
     </div>
   )
@@ -511,6 +557,7 @@ function CircuitDetailView({
   allCircuits: CircuitData[]
   aeEmail?: string
 }) {
+  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
   const visibleAddr = circuit.addressFields.filter(f => {
     if (!f.key.match(/^(moo|building|floor|room|soi)$/)) return true
     return f.value.trim().length > 0
@@ -555,7 +602,7 @@ function CircuitDetailView({
         </div>
       )}
 
-      <AeEmailBox circuit={circuit} onSent={onAeSent} aeEmail={aeEmail} />
+      <AeEmailBox circuit={circuit} />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
@@ -610,12 +657,18 @@ function CircuitDetailView({
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        <button onClick={exportExcel} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
-          ส่งออก Excel
-        </button>
-        <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
-          JSON
-        </button>
+        {aeCircuits.length > 0 ? (
+          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail ?? ''} />
+        ) : (
+          <>
+            <button onClick={exportExcel} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
+              ส่งออก Excel
+            </button>
+            <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+              JSON
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -656,7 +709,9 @@ function getExcelCell(c: CircuitData, key: string): { value: string; missing: bo
   return { value: '', missing: false }
 }
 
-function ExcelGridView({ circuits, allCircuits }: { circuits: CircuitData[]; allCircuits: CircuitData[] }) {
+function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitData[]; allCircuits: CircuitData[]; aeEmail: string }) {
+  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+
   const downloadXlsx = () => {
     const header = EXCEL_COLS.map(c => c.label)
     const rows = circuits.map(c => EXCEL_COLS.map(col => getExcelCell(c, col.key).value))
@@ -669,12 +724,18 @@ function ExcelGridView({ circuits, allCircuits }: { circuits: CircuitData[]; all
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        <button onClick={downloadXlsx} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
-          ดาวน์โหลด Excel
-        </button>
-        <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
-          JSON
-        </button>
+        {aeCircuits.length > 0 ? (
+          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail} />
+        ) : (
+          <>
+            <button onClick={downloadXlsx} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
+              ดาวน์โหลด Excel
+            </button>
+            <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+              JSON
+            </button>
+          </>
+        )}
       </div>
       <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
         <table className="text-sm border-collapse" style={{ minWidth: 'max-content' }}>
@@ -841,7 +902,7 @@ export default function ExtractionTab({
 
       <div className="pt-5">
         {activeTab === 'grid' ? (
-          <ExcelGridView circuits={visibleCircuits} allCircuits={circuits} />
+          <ExcelGridView circuits={visibleCircuits} allCircuits={circuits} aeEmail={aeEmail ?? ''} />
         ) : activeCircuit ? (
           <CircuitDetailView
             circuit={activeCircuit}
