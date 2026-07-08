@@ -1,5 +1,5 @@
 export const runtime = 'nodejs'
-export const maxDuration = 600 // seconds — 260-row files need ~13 Claude batches × ~15s each
+export const maxDuration = 300 // seconds — Vercel hobby plan max
 
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/services/supabase'
