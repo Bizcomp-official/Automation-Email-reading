@@ -1,6 +1,51 @@
 import { simpleParser } from 'mailparser'
 import * as XLSX from 'xlsx'
 
+// Decode RTF to plain text.
+// Handles \uN? unicode escapes and \'XX Windows-874 (Thai) hex escapes.
+// Thai characters in Windows-874 map to Unicode via offset +0xD60 for ranges 0xA1-0xDA and 0xE0-0xFB.
+function stripRtf(rtf: string): string {
+  // Unicode escape: \u<signed-int>? → char
+  let text = rtf.replace(/\\u(-?\d+)\??/g, (_, n) => {
+    const cp = parseInt(n, 10)
+    const codePoint = cp < 0 ? cp + 65536 : cp
+    return codePoint > 31 ? String.fromCodePoint(codePoint) : ' '
+  })
+  // Windows-874 hex escape: \'XX
+  text = text.replace(/\\'([0-9a-f]{2})/gi, (_, hex) => {
+    const b = parseInt(hex, 16)
+    if ((b >= 0xa1 && b <= 0xda) || (b >= 0xe0 && b <= 0xfb)) return String.fromCodePoint(b + 0xd60)
+    if (b >= 0x20 && b < 0x7f) return String.fromCodePoint(b)
+    return ''
+  })
+  // Strip RTF control words, groups, and backslash commands
+  return text
+    .replace(/\{[^{}]*\}/g, '')
+    .replace(/\\[a-z]+\*?-?\d* ?/gi, ' ')
+    .replace(/[{}\\]/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|tr|li|h[1-6]|blockquote)>/gi, '\n')
+    .replace(/<[^>]*>?/g, ' ')   // >? handles truncated/unclosed tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 // msgreader handles Outlook's proprietary .msg binary format.
 // Loaded dynamically so the server still starts if the package isn't installed yet.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -11,12 +56,14 @@ try {
   MsgReader = mod.default ?? mod
 
   // msgreader v1.x only maps PR_BODY (0x1000, plain text). Patch its const to also
-  // extract PR_BODY_HTML (0x1013) so HTML-formatted Outlook emails aren't silently dropped.
+  // extract PR_BODY_HTML (0x1013) and PR_RTF_COMPRESSED (0x1009) so rich-text and
+  // HTML-formatted Outlook emails aren't silently dropped.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const msgConst = require('msgreader/lib/const')
   const nameMapping = msgConst?.default?.MSG?.FIELD?.NAME_MAPPING
-  if (nameMapping && !nameMapping['1013']) {
-    nameMapping['1013'] = 'bodyHtml'
+  if (nameMapping) {
+    if (!nameMapping['1013']) nameMapping['1013'] = 'bodyHtml'
+    if (!nameMapping['1009']) nameMapping['1009'] = 'bodyRtf'
   }
 } catch {
   /* will surface a clear error at upload time */
@@ -48,20 +95,24 @@ async function parseMsgBuffer(buffer: Buffer): Promise<ParsedEmail> {
     if (s instanceof Uint8Array || Buffer.isBuffer(s)) return Buffer.from(s).toString('utf8').replace(/\0/g, '').trim()
     return ''
   }
-  const stripHtml = (s: unknown): string =>
-    toStr(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
   const subject: string = toStr(msg.subject)
   const from: string = msg.senderEmail
     ? `${toStr(msg.senderName)} <${toStr(msg.senderEmail)}>`.trim()
     : toStr(msg.senderName)
 
-  // Prefer plain text; fall back to stripped HTML
-  const bodyText: string = toStr(msg.body) || stripHtml(msg.bodyHtml)
+  // Priority: plain text → HTML → RTF (Outlook's native format, stored as PR_RTF_COMPRESSED 0x1009)
+  const plainText  = toStr(msg.body)
+  const htmlText   = htmlToText(toStr(msg.bodyHtml))
+  const rtfRaw     = toStr(msg.bodyRtf)
+  // rtfRaw may be binary compressed (LZFu); only use it if it looks like readable RTF text
+  const rtfText    = rtfRaw.startsWith('{\\rtf') ? stripRtf(rtfRaw) : ''
+  const bodyText: string = plainText || htmlText || rtfText
 
   console.log('[emailParser/msg] raw fields:', {
-    hasBody: !!msg.body, bodyLen: toStr(msg.body).length,
+    hasBody: !!msg.body, bodyLen: plainText.length,
     hasBodyHtml: !!msg.bodyHtml, bodyHtmlLen: toStr(msg.bodyHtml).length,
+    hasBodyRtf: !!msg.bodyRtf, bodyRtfLen: rtfRaw.length, rtfReadable: rtfRaw.startsWith('{\\rtf'),
     bodyTextLen: bodyText.length,
     attachCount: (msg.attachments ?? []).length,
   })
@@ -101,7 +152,11 @@ export async function parseEmailBuffer(buffer: Buffer, filename?: string): Promi
   const subject = parsed.subject ?? ''
   const from = parsed.from?.text ?? ''
   const receivedAt = parsed.date ?? null
-  const bodyText = parsed.text ?? ''
+  const rawText = parsed.text ?? ''
+  // If the text part is absent or is raw HTML (starts with <!DOCTYPE / <html / <meta),
+  // strip the HTML body instead so Claude receives readable text.
+  const looksLikeHtml = /^\s*(?:<[!?]|<html|<meta)/i.test(rawText)
+  const bodyText = (rawText && !looksLikeHtml) ? rawText : htmlToText(parsed.html || '')
 
   let excelRows = ''
   let rawExcelRows: Record<string, unknown>[] = []

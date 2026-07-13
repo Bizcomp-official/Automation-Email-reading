@@ -491,9 +491,17 @@ async function callClaude(userContent: string, batchLabel: string): Promise<Clau
   }
   console.log(`[claude/${batchLabel}] response length: ${raw.length}`)
 
+  const jsonStr = extractJson(raw)
+  if (!jsonStr.startsWith('{')) {
+    // Model returned prose (e.g. asking for more info) — email body was empty/malformed
+    console.error(`[claude/${batchLabel}] model returned prose instead of JSON. Raw:\n`, raw.slice(0, 400))
+    throw new Error(
+      'อีเมลนี้ไม่มีเนื้อหาที่อ่านได้ (body ว่างหรือเป็น HTML ที่ parse ไม่ได้) — กรุณาลองส่งออกเป็น .eml ใหม่',
+    )
+  }
   let result: ClaudeExtractionResult
   try {
-    result = JSON.parse(extractJson(raw)) as ClaudeExtractionResult
+    result = JSON.parse(jsonStr) as ClaudeExtractionResult
   } catch (err) {
     console.error(`[claude/${batchLabel}] JSON parse failed. Raw was:\n`, raw)
     throw new Error(`Claude returned invalid JSON: ${String(err)}`)

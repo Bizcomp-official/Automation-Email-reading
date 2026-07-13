@@ -791,18 +791,15 @@ function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitDa
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        {aeCircuits.length > 0 ? (
+        {aeCircuits.length > 0 && (
           <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail} />
-        ) : (
-          <>
-            <button onClick={downloadXlsx} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
-              ดาวน์โหลด Excel
-            </button>
-            <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
-              JSON
-            </button>
-          </>
         )}
+        <button onClick={downloadXlsx} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
+          ดาวน์โหลด Excel
+        </button>
+        <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+          JSON
+        </button>
       </div>
       <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
         <table className="text-sm border-collapse" style={{ minWidth: 'max-content' }}>
