@@ -34,6 +34,13 @@ interface CircuitData {
   customerNote: string | null
 }
 
+interface SiteData {
+  key: string
+  label: string
+  circuits: CircuitData[]
+  worstStatus: CompanyStatus
+}
+
 type RichOrder = Order & { addresses?: Address | Address[]; field_validations?: FieldValidation[] }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -161,6 +168,41 @@ function buildCombinedFromFields(addrFields: RichField[]): string {
   if (g('province'))    p.push(g('province'))
   if (g('postcode'))    p.push(g('postcode'))
   return p.join(' ')
+}
+
+// ── Site grouping ──────────────────────────────────────────────────────────────
+
+function normalizeStreetKey(c: CircuitData): string {
+  const get = (key: string) =>
+    (c.addressFields.find(f => f.key === key)?.value ?? '').toLowerCase().replace(/[\s,\-\.]/g, '')
+  // Deliberately exclude subdistrict, district, province: the AI may render these
+  // inconsistently across circuits (garbled Thai, "Bangkok" vs "กรุงเทพมหานคร", etc.).
+  // Postcode + house_no + road is specific enough to identify a physical site.
+  return [get('house_no'), get('moo'), get('soi'), get('road'), get('postcode')].join('|')
+}
+
+const STATUS_RANK: Record<CompanyStatus, number> = { 'รอ AE': 0, 'ต้องตรวจ': 1, 'พร้อมส่ง': 2, 'ส่งแล้ว': 3 }
+
+function siteLabelFor(c: CircuitData): string {
+  const building   = c.addressFields.find(f => f.key === 'building')?.value?.trim()
+  const branchName = c.customerFields.find(f => f.key === 'branch_name')?.value?.trim()
+  return building || branchName || c.company
+}
+
+function groupBySite(circuits: CircuitData[]): SiteData[] {
+  const map = new Map<string, SiteData>()
+  for (const c of circuits) {
+    const key = normalizeStreetKey(c) || c.orderId
+    if (!map.has(key)) {
+      map.set(key, { key, label: siteLabelFor(c), circuits: [], worstStatus: 'ส่งแล้ว' })
+    }
+    const site = map.get(key)!
+    site.circuits.push(c)
+    if (STATUS_RANK[c.companyStatus] < STATUS_RANK[site.worstStatus]) {
+      site.worstStatus = c.companyStatus
+    }
+  }
+  return Array.from(map.values())
 }
 
 function deriveCompanyStatus(customerFields: RichField[], addressFields: RichField[]): CompanyStatus {
@@ -709,13 +751,38 @@ function getExcelCell(c: CircuitData, key: string): { value: string; missing: bo
   return { value: '', missing: false }
 }
 
+// Address-type columns whose data should be suppressed on non-first circuits within a site
+const ADDR_COLS = new Set([
+  'combined_address', 'house_no', 'soi', 'road',
+  'subdistrict', 'district', 'province', 'postcode', 'latitude', 'longitude',
+])
+
 function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitData[]; allCircuits: CircuitData[]; aeEmail: string }) {
   const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+  const sites = groupBySite(circuits)
+
+  // Pre-flatten with site membership so JSX stays declarative
+  const rows = (() => {
+    const out: { c: CircuitData; rn: number; isFirst: boolean; isMulti: boolean }[] = []
+    let rn = 0
+    for (const site of sites) {
+      for (let ci = 0; ci < site.circuits.length; ci++) {
+        rn++
+        out.push({ c: site.circuits[ci], rn, isFirst: ci === 0, isMulti: site.circuits.length > 1 })
+      }
+    }
+    return out
+  })()
 
   const downloadXlsx = () => {
     const header = EXCEL_COLS.map(c => c.label)
-    const rows = circuits.map(c => EXCEL_COLS.map(col => getExcelCell(c, col.key).value))
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows])
+    const data = rows.map(({ c, isFirst, isMulti }) =>
+      EXCEL_COLS.map(col => {
+        if (ADDR_COLS.has(col.key) && isMulti && !isFirst) return ''
+        return getExcelCell(c, col.key).value
+      })
+    )
+    const ws = XLSX.utils.aoa_to_sheet([header, ...data])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'FC Export')
     XLSX.writeFile(wb, 'FC_export.xlsx')
@@ -750,14 +817,27 @@ function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitDa
             </tr>
           </thead>
           <tbody>
-            {circuits.map((c, i) => (
-              <tr key={c.orderId} className="border-b border-gray-100 last:border-0 hover:bg-gray-50/60">
-                <td className="px-3 py-2.5 text-xs text-gray-400 font-mono border-r border-gray-100 sticky left-0 bg-white">{i + 1}</td>
+            {rows.map(({ c, rn, isFirst, isMulti }) => (
+              <tr
+                key={c.orderId}
+                className={`border-b border-gray-100 last:border-0 hover:bg-gray-50/60 ${
+                  isMulti ? `border-l-2 ${isFirst ? 'border-l-[#185FA5]/50' : 'border-l-[#185FA5]/20'}` : ''
+                }`}
+              >
+                <td className="px-3 py-2.5 text-xs text-gray-400 font-mono border-r border-gray-100 sticky left-0 bg-white">{rn}</td>
                 {EXCEL_COLS.map(col => {
                   if (col.key === 'status') {
                     return (
                       <td key={col.key} className="px-3 py-2.5 border-r border-gray-100 last:border-0">
                         <CompanyStatusPill status={c.companyStatus} />
+                      </td>
+                    )
+                  }
+                  // Suppress repeated address data for non-first circuits in a multi-circuit site
+                  if (ADDR_COLS.has(col.key) && isMulti && !isFirst) {
+                    return (
+                      <td key={col.key} className="px-3 py-2.5 border-r border-gray-100 last:border-0 text-center">
+                        <span className="text-gray-200 select-none">↑</span>
                       </td>
                     )
                   }
@@ -780,6 +860,116 @@ function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitDa
   )
 }
 
+// ── Site detail view (multiple circuits at same address) ──────────────────────
+
+function SiteDetailView({
+  site,
+  onSaveField,
+  allCircuits,
+  aeEmail,
+}: {
+  site: SiteData
+  onSaveField: (circuitIdx: number, key: string, value: string) => void
+  allCircuits: CircuitData[]
+  aeEmail?: string
+}) {
+  const primary = site.circuits[0]
+  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+  const visibleAddr = primary.addressFields.filter(f => {
+    if (!f.key.match(/^(moo|building|floor|room|soi)$/)) return true
+    return f.value.trim().length > 0
+  })
+  const note = site.circuits.find(c => c.customerNote)?.customerNote ?? null
+
+  return (
+    <div className="space-y-4">
+      {note && (
+        <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <span className="text-amber-500 flex-shrink-0 mt-0.5">✏</span>
+          <div>
+            <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">หมายเหตุจากผู้ส่ง</p>
+            <p className="text-sm text-amber-900 leading-relaxed">{note}</p>
+          </div>
+        </div>
+      )}
+
+      {site.circuits.map((circuit, i) => (
+        <div key={circuit.orderId} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-3">
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[circuit.companyStatus]}`} />
+            <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wider flex-1">
+              วงจร {i + 1} — {circuit.customerFields.find(f => f.key === 'product_package')?.value || circuit.company}
+            </h3>
+            <CompanyStatusPill status={circuit.companyStatus} />
+          </div>
+          <div className="px-4 pt-3 pb-0">
+            <AeEmailBox circuit={circuit} />
+          </div>
+          <DetailTable
+            fields={circuit.customerFields}
+            onSaveField={(key, value) => onSaveField(circuit.idx, key, value)}
+          />
+        </div>
+      ))}
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ที่อยู่ปลายทาง (ร่วมกัน)</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-400 border-b border-gray-100">
+              <th className="text-left px-4 py-2 font-medium w-40">ฟิลด์</th>
+              <th className="text-left px-4 py-2 font-medium">ค่า</th>
+              <th className="text-left px-4 py-2 font-medium w-36">ที่มา</th>
+              <th className="text-left px-4 py-2 font-medium w-28">สถานะ</th>
+              <th className="text-left px-4 py-2 font-medium">หมายเหตุ AI</th>
+              <th className="text-right px-4 py-2 font-medium w-20">ความมั่นใจ</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-b border-gray-50">
+              <td className="px-4 py-2.5 text-gray-600 font-medium whitespace-nowrap">สถานที่ติดตั้ง (รวม)</td>
+              <td className="px-4 py-2.5 text-gray-900">{primary.combinedAddress || <span className="text-gray-300">—</span>}</td>
+              <td className="px-4 py-2.5"><SourceBadge source="email" /></td>
+              <td className="px-4 py-2.5"><StatusPill status="ok" /></td>
+              <td className="px-4 py-2.5 text-gray-300 text-xs">—</td>
+              <td />
+            </tr>
+            <tr className="border-b border-gray-100">
+              <td colSpan={6} className="px-4 py-1.5">
+                <span className="text-xs text-cyan-600 font-medium">↳ AI แยก address รวม → fields ด้านล่าง</span>
+              </td>
+            </tr>
+            {visibleAddr.map(f => (
+              <tr key={f.key} className="border-b border-gray-50 last:border-0">
+                <td className="px-4 py-2.5 text-gray-500 pl-8 whitespace-nowrap">{f.label}</td>
+                <td className="px-4 py-2.5">
+                  <EditableCell field={f} onSave={v => onSaveField(primary.idx, f.key, v)} />
+                </td>
+                <td className="px-4 py-2.5"><SourceBadge source={f.source} /></td>
+                <td className="px-4 py-2.5"><StatusPill status={f.status} /></td>
+                <td className="px-4 py-2.5 max-w-xs"><AiNote note={f.note} /></td>
+                <td className="px-4 py-2.5 text-right"><ConfidenceText conf={f.confidence} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center gap-3 pt-1">
+        {aeCircuits.length > 0 ? (
+          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail ?? ''} />
+        ) : (
+          <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+            JSON
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 type FilterChip = 'ทั้งหมด' | 'ต้องตรวจ' | 'รอ AE' | 'พร้อมส่ง'
@@ -794,7 +984,7 @@ export default function ExtractionTab({
   onSelectOrder: (idx: number) => void
 }) {
   const [circuits, setCircuits] = useState<CircuitData[]>(() => buildCircuits(orders))
-  const [activeTab, setActiveTab] = useState<'grid' | number>('grid')
+  const [activeTab, setActiveTab] = useState<'grid' | string>('grid')
   const [filter, setFilter] = useState<FilterChip>('ทั้งหมด')
 
   const saveField = useCallback((circuitIdx: number, key: string, newValue: string) => {
@@ -839,8 +1029,9 @@ export default function ExtractionTab({
   }
 
   const visibleCircuits = filter === 'ทั้งหมด' ? circuits : circuits.filter(c => c.companyStatus === filter)
-  const companyCount = new Set(circuits.map(c => c.company)).size
-  const activeCircuit = typeof activeTab === 'number' ? circuits[activeTab] : null
+  const visibleSites = groupBySite(visibleCircuits)
+  const allSites = groupBySite(circuits)
+  const activeSite = activeTab !== 'grid' ? visibleSites.find(s => s.key === activeTab) ?? null : null
 
   return (
     <div className="space-y-5">
@@ -849,7 +1040,7 @@ export default function ExtractionTab({
         <p className="text-sm text-gray-600">
           ตรวจพบ <span className="font-semibold text-gray-900">{circuits.length}</span> วงจร
           {' · '}
-          <span className="font-semibold text-gray-900">{companyCount}</span> บริษัท
+          <span className="font-semibold text-gray-900">{allSites.length}</span> site
         </p>
         <div className="flex gap-2 flex-wrap">
           {(['ทั้งหมด', 'ต้องตรวจ', 'รอ AE', 'พร้อมส่ง'] as FilterChip[]).map(chip => (
@@ -885,16 +1076,21 @@ export default function ExtractionTab({
             </svg>
             ทุกวงจร
           </button>
-          {visibleCircuits.map(c => (
+          {visibleSites.map((site, si) => (
             <button
-              key={c.orderId}
-              onClick={() => { setActiveTab(c.idx); onSelectOrder(c.idx) }}
+              key={site.key}
+              onClick={() => { setActiveTab(site.key); onSelectOrder(site.circuits[0].idx) }}
               className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap transition-colors -mb-px flex-shrink-0 ${
-                activeTab === c.idx ? 'border-[#185FA5] text-[#185FA5]' : 'border-transparent text-gray-500 hover:text-gray-700'
+                activeTab === site.key ? 'border-[#185FA5] text-[#185FA5]' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[c.companyStatus]}`} />
-              วงจร {c.idx + 1} · {c.company}
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[site.worstStatus]}`} />
+              Site {si + 1} · {site.label}
+              {site.circuits.length > 1 && (
+                <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full font-medium ml-1">
+                  {site.circuits.length} วงจร
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -903,11 +1099,18 @@ export default function ExtractionTab({
       <div className="pt-5">
         {activeTab === 'grid' ? (
           <ExcelGridView circuits={visibleCircuits} allCircuits={circuits} aeEmail={aeEmail ?? ''} />
-        ) : activeCircuit ? (
+        ) : activeSite && activeSite.circuits.length === 1 ? (
           <CircuitDetailView
-            circuit={activeCircuit}
-            onSaveField={(key, value) => saveField(activeCircuit.idx, key, value)}
-            onAeSent={() => markAeSent(activeCircuit.idx)}
+            circuit={activeSite.circuits[0]}
+            onSaveField={(key, value) => saveField(activeSite.circuits[0].idx, key, value)}
+            onAeSent={() => markAeSent(activeSite.circuits[0].idx)}
+            allCircuits={circuits}
+            aeEmail={aeEmail}
+          />
+        ) : activeSite ? (
+          <SiteDetailView
+            site={activeSite}
+            onSaveField={saveField}
             allCircuits={circuits}
             aeEmail={aeEmail}
           />

@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/services/supabase'
 import { parseEmailBuffer } from '@/lib/services/emailParser'
 import { extractOrdersFromEmail } from '@/lib/services/claude'
+import { resolveSubdistrict, resolveDistrict, resolveProvince, hasPostcode } from '@/lib/services/postcodeResolver'
 import type { ClaudeOrder, ClaudeFieldValidation, ValidationStatus } from '@fc/shared'
 
 function generateBatchCode(): string {
@@ -43,6 +44,28 @@ const ADDRESS_FIELDS: { key: string; label: string }[] = [
   { key: 'longitude',   label: 'ลองจิจูด' },
 ]
 
+// Apply postcode-table resolution for subdistrict / district.
+// Returns null for other keys or when postcode / value is absent.
+function resolveAddrField(
+  key: string,
+  rawValue: string | undefined | null,
+  postcode: string | undefined | null,
+): { value: string; status: ValidationStatus; ai_note: string; confidence: number } | null {
+  if (key !== 'subdistrict' && key !== 'district' && key !== 'province') return null
+  if (!rawValue || !postcode) return null
+  if (!hasPostcode(postcode)) return null  // Unknown postcode — leave Claude's validation untouched
+  const resolved =
+    key === 'subdistrict' ? resolveSubdistrict(rawValue, postcode) :
+    key === 'district'    ? resolveDistrict(rawValue, postcode) :
+                            resolveProvince(rawValue, postcode)
+  return {
+    value: resolved.value,
+    status: resolved.status as ValidationStatus,
+    ai_note: resolved.ai_note,
+    confidence: resolved.status === 'correct' ? 0.99 : 0.4,
+  }
+}
+
 /**
  * Merge Claude's explicit field validations with auto-generated rows for
  * every field that Claude found but didn't validate, and every null field.
@@ -76,9 +99,12 @@ function buildCompleteValidations(o: ClaudeOrder): ClaudeFieldValidation[] {
 
   // Address fields
   const isOffice = o.address?.is_office_known_location === true
+  const postcode = o.address?.postcode ?? null
   for (const { key } of ADDRESS_FIELDS) {
     if (explicit.has(key)) {
-      result.push(explicit.get(key)!)
+      const e = explicit.get(key)!
+      const override = resolveAddrField(key, e.value, postcode)
+      result.push(override ? { ...e, ...override } : e)
       continue
     }
     const raw = o.address?.[key as keyof typeof o.address]
@@ -93,6 +119,12 @@ function buildCompleteValidations(o: ClaudeOrder): ClaudeFieldValidation[] {
         ai_note: isOffice ? 'สำนักงาน – ทราบตำแหน่งแล้ว ไม่ต้องการพิกัด GPS' : 'ต้องการพิกัด GPS จาก AE',
         confidence: isOffice ? 1 : 0,
       })
+      continue
+    }
+
+    const override = resolveAddrField(key, value, postcode)
+    if (override) {
+      result.push({ field_name: key, ...override })
       continue
     }
 
