@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react'
 import type { Order, Address, FieldValidation } from '@fc/shared'
 import * as XLSX from 'xlsx'
+import MapPreview from '../components/MapPreview'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -703,6 +704,20 @@ function CircuitDetailView({
           </tbody>
         </table>
       </div>
+
+      {(() => {
+        const lat = circuit.addressFields.find(f => f.key === 'latitude')?.value
+        const lng = circuit.addressFields.find(f => f.key === 'longitude')?.value
+        const latField = circuit.addressFields.find(f => f.key === 'latitude')
+        const isOffice = latField?.status === 'ok' && latField?.note?.includes('สำนักงาน')
+        return (
+          <MapPreview
+            lat={lat || null}
+            lng={lng || null}
+            noCoordReason={isOffice ? 'office' : 'missing'}
+          />
+        )
+      })()}
 
       <div className="flex items-center gap-3 pt-1">
         {problemCircuits.length > 0 && (
