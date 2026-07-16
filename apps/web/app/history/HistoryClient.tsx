@@ -275,7 +275,7 @@ export default function HistoryClient() {
               <table className="w-full text-sm">
                 <thead className="border-b border-gray-100">
                   <tr className="text-xs text-gray-400">
-                    <th className="text-left px-4 py-2.5 font-medium">ลูกค้า</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Site / ลูกค้า</th>
                     <th className="text-left px-4 py-2.5 font-medium">ที่อยู่</th>
                     <th className="text-left px-4 py-2.5 font-medium">AI</th>
                     <th className="text-left px-4 py-2.5 font-medium">สถานะตรวจ</th>
@@ -286,8 +286,11 @@ export default function HistoryClient() {
                   {batch.items.map((row) => (
                     <tr key={row.id} onClick={() => openDrawer(row.id)} className="hover:bg-gray-50 cursor-pointer transition-colors">
                       <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900">{row.customer_name ?? '—'}</div>
-                        {row.company_name && <div className="text-xs text-gray-400">{row.company_name}</div>}
+                        <div className="font-medium text-gray-900">{row.branch_name || row.customer_name || '—'}</div>
+                        {row.company_name && <div className="text-xs text-gray-500">{row.company_name}</div>}
+                        {row.branch_name && row.customer_name && (
+                          <div className="text-xs text-gray-400">{row.customer_name}</div>
+                        )}
                         {row.customer_note && (
                           <div className="flex items-center gap-1 mt-1">
                             <svg className="w-3 h-3 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

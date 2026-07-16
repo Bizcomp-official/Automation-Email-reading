@@ -87,6 +87,7 @@ export interface OrderListItem {
   seq: number
   customer_name: string | null
   company_name: string | null
+  branch_name: string | null
   ai_status: AiStatus
   created_at: string
   address_summary: string | null

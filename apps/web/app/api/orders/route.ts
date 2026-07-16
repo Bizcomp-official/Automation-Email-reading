@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   let query = supabase
     .from('orders')
     .select(
-      `id, seq, customer_name, company_name, ai_status, created_at, customer_note,
+      `id, seq, customer_name, company_name, branch_name, ai_status, created_at, customer_note,
        batch_id,
        batches!inner(batch_code, email_from),
        addresses(subdistrict, district, province, postcode),
@@ -54,6 +54,7 @@ export async function GET(req: NextRequest) {
     seq: o.seq,
     customer_name: o.customer_name,
     company_name: o.company_name,
+    branch_name: o.branch_name ?? null,
     ai_status: o.ai_status,
     created_at: o.created_at,
     address_summary: buildAddressSummary(o.addresses),
