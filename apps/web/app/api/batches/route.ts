@@ -200,6 +200,15 @@ export async function POST(req: NextRequest) {
   }
 
   // Bulk insert all orders in one round-trip
+  if (extraction.orders.length === 0) {
+    console.error('[batches] Claude returned 0 orders — email has no recognisable order data')
+    await supabase.from('batches').update({ status: 'error' }).eq('id', batch.id)
+    return NextResponse.json(
+      { error: 'AI ไม่พบข้อมูล order ในอีเมลนี้ — กรุณาตรวจสอบว่าอีเมลมีข้อมูลคำสั่งติดตั้ง FC' },
+      { status: 422 },
+    )
+  }
+
   const validAiStatuses = ['correct', 'missing', 'suspicious', 'incorrect']
   const { data: createdOrders, error: ordersErr } = await supabase
     .from('orders')

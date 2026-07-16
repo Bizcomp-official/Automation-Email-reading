@@ -191,6 +191,8 @@ export default function NewBatchClient() {
           key={batch.id}
           orders={orders}
           aeEmail={batch.email_from ?? ''}
+          batchCode={batch.batch_code}
+          emailSubject={batch.email_subject ?? ''}
           onSelectOrder={setSelectedOrderIdx}
         />
       )}

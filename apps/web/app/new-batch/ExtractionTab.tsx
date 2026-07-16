@@ -456,46 +456,53 @@ function DetailTable({ fields, onSaveField }: { fields: RichField[]; onSaveField
   )
 }
 
-// ── Build consolidated AE email for all รอ AE circuits ────────────────────────
+// ── System notification email (Website → Inside Sales) ───────────────────────
 
-function buildConsolidatedEmail(aeCircuits: CircuitData[], aeEmail: string) {
-  const ae = aeCircuits[0]?.ae || '[ชื่อ AE]'
-
-  const siteBlocks = aeCircuits.map((c, i) => {
-    const missing = [...c.customerFields, ...c.addressFields].filter(f => f.required && f.status === 'missing')
-    const hasGps = missing.some(f => f.key === 'latitude' || f.key === 'longitude')
-    const others = missing.filter(f => f.key !== 'latitude' && f.key !== 'longitude')
-    const lines = [
-      ...others.map(f => `  • ${f.label}`),
-      ...(hasGps ? ['  • พิกัด GPS (ละติจูด / ลองจิจูด) — กรุณาแชร์ลิงก์ Google Maps หรือระบุค่าพิกัดของสถานที่ติดตั้ง'] : []),
-    ]
-    return `【 Site ${i + 1} 】 ${c.company}\n${lines.join('\n')}`
+function buildNotificationEmail(
+  problemCircuits: CircuitData[],
+  aeEmail: string,
+  batchCode: string,
+  emailSubject: string,
+) {
+  const subject = `[FC ต้องตรวจสอบ] REF:${batchCode}`
+  const companies = [...new Set(problemCircuits.map(c => c.company))].join(', ')
+  const siteBlocks = problemCircuits.map((c, i) => {
+    const all = [...c.customerFields, ...c.addressFields]
+    const missing  = all.filter(f => f.required && f.status === 'missing')
+    const mismatch = all.filter(f => f.status === 'mismatch')
+    const aiGuess  = all.filter(f => f.status === 'aiguess')
+    const lines: string[] = []
+    if (missing.length)  lines.push(`  ขาดข้อมูล: ${missing.map(f => f.label).join(', ')}`)
+    if (mismatch.length) lines.push(`  ต้องตรวจสอบ: ${mismatch.map(f => f.label).join(', ')}`)
+    if (aiGuess.length)  lines.push(`  AI เดา: ${aiGuess.map(f => f.label).join(', ')}`)
+    return `Site ${i + 1}: ${c.company}\n${lines.join('\n')}`
   })
-
-  const subject = `ขอข้อมูลเพิ่มเติม FC – ${aeCircuits.length} sites (${aeCircuits.map(c => c.company).join(', ')})`
-  const body = `เรียน ${ae},
-รบกวนขอข้อมูลเพิ่มเติมสำหรับ FC จำนวน ${aeCircuits.length} sites ค่ะ เนื่องจากข้อมูลด้านล่างเป็นข้อมูลจำเป็น (required) ที่ต้องกรอกใน Check Fact ก่อนส่งเข้าระบบ E-Ordering
+  const body =
+`จาก: ${aeEmail}
+บริษัท: ${companies}
 
 ${siteBlocks.join('\n\n')}
 
-กรุณาส่งข้อมูลกลับมาเพื่อดำเนินการส่ง FC เข้าระบบและจะแจ้งเลข FC No. กลับให้ทันทีค่ะ
-
-ขอบคุณค่ะ
-Inside Sales`
-
-  return { subject, body, aeEmail }
+กรุณาแก้ไขข้อมูลในไฟล์ Excel ที่แนบให้ครบทุก site แล้วตอบกลับโดย:
+1. แนบไฟล์ Excel ที่กรอกครบทั้งหมด (ห้ามส่งเฉพาะช่องที่ขาด — ไฟล์ไม่ครบจะประมวลผลไม่ได้)
+2. เปลี่ยน Subject เป็น (คัดลอกตรงๆ ห้ามแก้ไข):
+   FC Request: ${emailSubject} | REF:${batchCode} | REVISED`
+  return { subject, body }
 }
 
-// ── Consolidated email button (shown instead of Export when รอ AE exists) ──────
+// ── Notification button (shown when any circuit has problems) ─────────────────
 
-function ConsolidatedEmailButton({ aeCircuits, aeEmail }: { aeCircuits: CircuitData[]; aeEmail: string }) {
+function NotificationEmailButton({ problemCircuits, aeEmail, batchCode, emailSubject }: {
+  problemCircuits: CircuitData[]; aeEmail: string; batchCode: string; emailSubject: string
+}) {
   const [open, setOpen] = useState(false)
-  const [sent, setSent] = useState(false)
-  const { subject, body } = buildConsolidatedEmail(aeCircuits, aeEmail)
+  const [copied, setCopied] = useState(false)
+  const { subject, body } = buildNotificationEmail(problemCircuits, aeEmail, batchCode, emailSubject)
 
-  const handleSend = () => {
-    window.open(`mailto:${encodeURIComponent(aeEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`)
-    setSent(true)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -503,27 +510,22 @@ function ConsolidatedEmailButton({ aeCircuits, aeEmail }: { aeCircuits: CircuitD
       <div className="flex items-center gap-2">
         <button
           onClick={() => setOpen(v => !v)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-sm font-medium hover:bg-rose-100 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-700 text-sm font-medium hover:bg-amber-100 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
           </svg>
           {open ? 'ซ่อนอีเมล' : 'ดูอีเมล'}
-          <span className="text-xs bg-rose-200 text-rose-800 px-1.5 py-0.5 rounded-full font-semibold">{aeCircuits.length} sites</span>
-          {sent && <span className="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded-full">ส่งแล้ว</span>}
+          <span className="text-xs bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded-full font-semibold">{problemCircuits.length} ปัญหา</span>
         </button>
       </div>
 
       {open && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 space-y-3">
-          <div className="bg-white rounded-lg border border-rose-100 p-3 space-y-2">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="font-medium text-gray-600">ถึง:</span>
-              <span className="text-gray-800">{aeEmail || '(ไม่มีอีเมล AE)'}</span>
-            </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+          <div className="bg-white rounded-lg border border-amber-100 p-3 space-y-2">
             <div className="flex items-start gap-2 text-xs">
               <span className="font-medium text-gray-600 flex-shrink-0">Subject:</span>
-              <span className="text-gray-800">{subject}</span>
+              <span className="text-gray-800 font-mono">{subject}</span>
             </div>
             <div className="border-t border-gray-100 pt-2">
               <pre className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed font-sans">{body}</pre>
@@ -531,10 +533,10 @@ function ConsolidatedEmailButton({ aeCircuits, aeEmail }: { aeCircuits: CircuitD
           </div>
           <div className="flex justify-end">
             <button
-              onClick={handleSend}
-              className="text-sm px-4 py-2 rounded-lg bg-rose-700 text-white hover:bg-rose-800 transition-colors"
+              onClick={handleCopy}
+              className="text-sm px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors"
             >
-              {sent ? 'ส่งซ้ำ' : 'เปิดอีเมล'}
+              {copied ? 'คัดลอกแล้ว' : 'คัดลอก'}
             </button>
           </div>
         </div>
@@ -592,14 +594,18 @@ function CircuitDetailView({
   onAeSent,
   allCircuits,
   aeEmail,
+  batchCode = '',
+  emailSubject = '',
 }: {
   circuit: CircuitData
   onSaveField: (key: string, value: string) => void
   onAeSent: () => void
   allCircuits: CircuitData[]
   aeEmail?: string
+  batchCode?: string
+  emailSubject?: string
 }) {
-  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+  const problemCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE' || c.companyStatus === 'ต้องตรวจ')
   const visibleAddr = circuit.addressFields.filter(f => {
     if (!f.key.match(/^(moo|building|floor|room|soi)$/)) return true
     return f.value.trim().length > 0
@@ -699,18 +705,18 @@ function CircuitDetailView({
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        {aeCircuits.length > 0 ? (
-          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail ?? ''} />
-        ) : (
-          <>
-            <button onClick={exportExcel} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
-              ส่งออก Excel
-            </button>
-            <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
-              JSON
-            </button>
-          </>
+        {problemCircuits.length > 0 && (
+          <NotificationEmailButton
+            problemCircuits={problemCircuits} aeEmail={aeEmail ?? ''}
+            batchCode={batchCode} emailSubject={emailSubject}
+          />
         )}
+        <button onClick={exportExcel} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
+          ส่งออก Excel
+        </button>
+        <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+          JSON
+        </button>
       </div>
     </div>
   )
@@ -757,8 +763,10 @@ const ADDR_COLS = new Set([
   'subdistrict', 'district', 'province', 'postcode', 'latitude', 'longitude',
 ])
 
-function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitData[]; allCircuits: CircuitData[]; aeEmail: string }) {
-  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+function ExcelGridView({ circuits, allCircuits, aeEmail, batchCode = '', emailSubject = '' }: {
+  circuits: CircuitData[]; allCircuits: CircuitData[]; aeEmail: string; batchCode?: string; emailSubject?: string
+}) {
+  const problemCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE' || c.companyStatus === 'ต้องตรวจ')
   const sites = groupBySite(circuits)
 
   // Pre-flatten with site membership so JSX stays declarative
@@ -791,8 +799,11 @@ function ExcelGridView({ circuits, allCircuits, aeEmail }: { circuits: CircuitDa
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        {aeCircuits.length > 0 && (
-          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail} />
+        {problemCircuits.length > 0 && (
+          <NotificationEmailButton
+            problemCircuits={problemCircuits} aeEmail={aeEmail}
+            batchCode={batchCode} emailSubject={emailSubject}
+          />
         )}
         <button onClick={downloadXlsx} className="px-4 py-2 rounded-lg bg-[#185FA5] text-white text-sm font-medium hover:bg-[#145090] transition-colors">
           ดาวน์โหลด Excel
@@ -864,14 +875,18 @@ function SiteDetailView({
   onSaveField,
   allCircuits,
   aeEmail,
+  batchCode = '',
+  emailSubject = '',
 }: {
   site: SiteData
   onSaveField: (circuitIdx: number, key: string, value: string) => void
   allCircuits: CircuitData[]
   aeEmail?: string
+  batchCode?: string
+  emailSubject?: string
 }) {
   const primary = site.circuits[0]
-  const aeCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE')
+  const problemCircuits = allCircuits.filter(c => c.companyStatus === 'รอ AE' || c.companyStatus === 'ต้องตรวจ')
   const visibleAddr = primary.addressFields.filter(f => {
     if (!f.key.match(/^(moo|building|floor|room|soi)$/)) return true
     return f.value.trim().length > 0
@@ -955,13 +970,15 @@ function SiteDetailView({
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        {aeCircuits.length > 0 ? (
-          <ConsolidatedEmailButton aeCircuits={aeCircuits} aeEmail={aeEmail ?? ''} />
-        ) : (
-          <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
-            JSON
-          </button>
+        {problemCircuits.length > 0 && (
+          <NotificationEmailButton
+            problemCircuits={problemCircuits} aeEmail={aeEmail ?? ''}
+            batchCode={batchCode} emailSubject={emailSubject}
+          />
         )}
+        <button onClick={() => downloadJson(allCircuits)} className="text-xs text-slate-300 hover:text-slate-500 transition-colors">
+          JSON
+        </button>
       </div>
     </div>
   )
@@ -975,10 +992,14 @@ export default function ExtractionTab({
   orders,
   aeEmail,
   onSelectOrder,
+  batchCode = '',
+  emailSubject = '',
 }: {
   orders: RichOrder[]
   aeEmail?: string
   onSelectOrder: (idx: number) => void
+  batchCode?: string
+  emailSubject?: string
 }) {
   const [circuits, setCircuits] = useState<CircuitData[]>(() => buildCircuits(orders))
   const [activeTab, setActiveTab] = useState<'grid' | string>('grid')
@@ -1095,7 +1116,7 @@ export default function ExtractionTab({
 
       <div className="pt-5">
         {activeTab === 'grid' ? (
-          <ExcelGridView circuits={visibleCircuits} allCircuits={circuits} aeEmail={aeEmail ?? ''} />
+          <ExcelGridView circuits={visibleCircuits} allCircuits={circuits} aeEmail={aeEmail ?? ''} batchCode={batchCode} emailSubject={emailSubject} />
         ) : activeSite && activeSite.circuits.length === 1 ? (
           <CircuitDetailView
             circuit={activeSite.circuits[0]}
@@ -1103,6 +1124,8 @@ export default function ExtractionTab({
             onAeSent={() => markAeSent(activeSite.circuits[0].idx)}
             allCircuits={circuits}
             aeEmail={aeEmail}
+            batchCode={batchCode}
+            emailSubject={emailSubject}
           />
         ) : activeSite ? (
           <SiteDetailView
@@ -1110,6 +1133,8 @@ export default function ExtractionTab({
             onSaveField={saveField}
             allCircuits={circuits}
             aeEmail={aeEmail}
+            batchCode={batchCode}
+            emailSubject={emailSubject}
           />
         ) : null}
       </div>
