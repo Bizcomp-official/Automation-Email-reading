@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/services/supabase'
 import { parseEmailBuffer } from '@/lib/services/emailParser'
 import { extractOrdersFromEmail } from '@/lib/services/claude'
-import { resolveSubdistrict, resolveDistrict, resolveProvince, hasPostcode } from '@/lib/services/postcodeResolver'
+import { resolveSubdistrict, resolveDistrict, resolveProvince, hasPostcode, lookupByPostcode } from '@/lib/services/postcodeResolver'
 import type { ClaudeOrder, ClaudeFieldValidation, ValidationStatus } from '@fc/shared'
 
 function generateBatchCode(): string {
@@ -63,6 +63,52 @@ function resolveAddrField(
     status: resolved.status as ValidationStatus,
     ai_note: resolved.ai_note,
     confidence: resolved.status === 'correct' ? 0.99 : 0.4,
+  }
+}
+
+const ADDRESS_FIELD_SET: Set<string> = new Set(ADDRESS_FIELDS.map(f => f.key))
+const ORDER_FIELD_SET:   Set<string> = new Set(ORDER_FIELDS.map(f => f.key as string))
+
+/**
+ * Apply AI corrections before storing:
+ * Pass 1 — Claude's explicit field corrections:
+ *   • suggested: the inferred value is fv.value (no corrected_value); apply it.
+ *   • suspicious / incorrect: the fix is fv.corrected_value; apply when present.
+ *   Also updates fv.value in-place so field_validations stores the corrected value.
+ * Pass 2 — Postcode-table auto-fill for null district / province / subdistrict.
+ *   Only fills fields that are still null after Pass 1; never overwrites explicit data.
+ *   Subdistrict is only filled when the postcode maps to exactly one subdistrict.
+ */
+function applyAutoCorrections(o: ClaudeOrder): void {
+  if (!o.address) return
+
+  // Pass 1: Claude's explicit corrections and suggestions
+  for (const fv of o.fields ?? []) {
+    if (fv.status !== 'suggested' && fv.status !== 'suspicious' && fv.status !== 'incorrect') continue
+
+    // suggested → inferred value is fv.value; suspicious/incorrect → fix is corrected_value
+    const correction = fv.status === 'suggested'
+      ? fv.value?.trim() || null
+      : fv.corrected_value?.trim() || null
+    if (!correction) continue
+
+    if (ADDRESS_FIELD_SET.has(fv.field_name)) {
+      ;(o.address as Record<string, unknown>)[fv.field_name] = correction
+    } else if (ORDER_FIELD_SET.has(fv.field_name)) {
+      ;(o as unknown as Record<string, unknown>)[fv.field_name] = correction
+    }
+    fv.value = correction  // field_validations row stores the corrected value
+  }
+
+  // Pass 2: fill null administrative fields directly from postcode table
+  const postcode = o.address.postcode ?? null
+  if (!postcode || !hasPostcode(postcode)) return
+  const lookup = lookupByPostcode(postcode)
+  if (!lookup) return
+  if (!o.address.district)    o.address.district  = lookup.district
+  if (!o.address.province)    o.address.province  = lookup.province
+  if (!o.address.subdistrict && lookup.firstSubdistrict) {
+    o.address.subdistrict = lookup.firstSubdistrict  // only when unambiguous
   }
 }
 
@@ -208,6 +254,9 @@ export async function POST(req: NextRequest) {
       { status: 422 },
     )
   }
+
+  // Apply AI corrections in-place before any DB writes
+  for (const o of extraction.orders) applyAutoCorrections(o)
 
   const validAiStatuses = ['correct', 'missing', 'suspicious', 'incorrect']
   const { data: createdOrders, error: ordersErr } = await supabase

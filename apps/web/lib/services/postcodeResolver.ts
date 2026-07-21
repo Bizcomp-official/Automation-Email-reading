@@ -36,6 +36,23 @@ export function hasPostcode(postcode: string): boolean {
   return postcode.trim() in POSTCODE_MAP
 }
 
+export interface PostcodeLookup {
+  district: string
+  province: string
+  /** Non-null only when the postcode maps to exactly one subdistrict (unambiguous). */
+  firstSubdistrict: string | null
+}
+
+export function lookupByPostcode(postcode: string): PostcodeLookup | null {
+  const entry = POSTCODE_MAP[postcode.trim()]
+  if (!entry) return null
+  return {
+    district: entry.district,
+    province: entry.province,
+    firstSubdistrict: entry.subdistricts.length === 1 ? entry.subdistricts[0].thai : null,
+  }
+}
+
 export interface ResolveResult {
   value: string
   status: 'correct' | 'suspicious'

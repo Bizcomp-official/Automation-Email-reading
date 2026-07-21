@@ -520,6 +520,19 @@ async function callClaude(userContent: string, batchLabel: string): Promise<Clau
   return result.orders
 }
 
+// ── Building name normaliser ──────────────────────────────────────────────────
+// If the extracted building value is a bare name (no Thai building-type prefix),
+// prepend "อาคาร" so downstream systems and the UI always display a labeled value.
+const BUILDING_PREFIX_RE = /^(?:อาคาร|ตึก|โรงพยาบาล|รพ\.|โรงเรียน|โรงแรม|ห้างสรรพสินค้า|ห้าง|ศูนย์|สถานี|วัด|มหาวิทยาลัย|มหา|สำนักงาน)/u
+
+function normaliseBuildingName(building: string | null | undefined): string | null | undefined {
+  if (!building) return building
+  const trimmed = building.trim()
+  if (!trimmed) return building
+  if (BUILDING_PREFIX_RE.test(trimmed)) return trimmed   // already labelled
+  return `อาคาร${trimmed}`
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function extractOrdersFromEmail(
@@ -580,6 +593,13 @@ export async function extractOrdersFromEmail(
     const rawContent = [coordHint, resolvedEmailSection, excelSection].filter(Boolean).join('\n\n')
     const userContent = await resolveGoogleMapsUrls(rawContent)
     allOrders = await callClaude(userContent, 'single')
+  }
+
+  // Post-process: normalise building names (add "อาคาร" prefix when missing).
+  for (const order of allOrders) {
+    if (order.address) {
+      order.address.building = normaliseBuildingName(order.address.building) as string | undefined
+    }
   }
 
   // Post-process: force-apply pre-extracted coordinator to any order Claude left null.

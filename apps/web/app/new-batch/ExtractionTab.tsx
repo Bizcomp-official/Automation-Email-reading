@@ -740,31 +740,49 @@ function CircuitDetailView({
 // ── Excel grid view ───────────────────────────────────────────────────────────
 
 const EXCEL_COLS: { key: string; label: string }[] = [
-  { key: 'status',             label: 'สถานะ' },
-  { key: 'company_name',       label: 'บริษัท' },
-  { key: 'circuit_order_type', label: 'ประเภทวงจร' },
-  { key: 'old_circuit',        label: 'วงจรเดิม' },
-  { key: 'product_package',    label: 'Product Package' },
-  { key: 'speed',              label: 'Speed' },
-  { key: 'store_code',         label: 'รหัสร้าน' },
-  { key: 'branch_name',        label: 'ชื่อสาขา' },
-  { key: 'coordinator_name',   label: 'ผู้ประสานงาน' },
-  { key: 'coordinator_phone',  label: 'เบอร์ติดต่อ' },
-  { key: 'combined_address',   label: 'สถานที่ติดตั้ง' },
-  { key: 'house_no',           label: 'บ้านเลขที่' },
-  { key: 'soi',                label: 'ซอย' },
-  { key: 'road',               label: 'ถนน' },
-  { key: 'subdistrict',        label: 'แขวง/ตำบล' },
-  { key: 'district',           label: 'เขต/อำเภอ' },
-  { key: 'province',           label: 'จังหวัด' },
-  { key: 'postcode',           label: 'รหัสไปรษณีย์' },
-  { key: 'latitude',           label: 'Latitude' },
-  { key: 'longitude',          label: 'Longitude' },
+  { key: 'status',             label: 'สถานะ' },            // A
+  { key: 'company_name',       label: 'บริษัท' },           // B
+  { key: 'circuit_order_type', label: 'ประเภทวงจร' },       // C
+  { key: 'old_circuit',        label: 'วงจรเดิม' },         // D
+  { key: 'product_package',    label: 'Product Package' },  // E
+  { key: 'speed',              label: 'Speed' },            // F
+  { key: 'store_code',         label: 'รหัสร้าน' },         // G
+  { key: 'branch_name',        label: 'ชื่อสาขา' },         // H
+  { key: 'coordinator_name',   label: 'ผู้ประสานงาน' },     // I
+  { key: 'coordinator_phone',  label: 'เบอร์ติดต่อ' },      // J
+  { key: 'combined_address',   label: 'สถานที่ติดตั้ง' },   // K  raw from email
+  { key: 'house_no',           label: 'บ้านเลขที่' },        // L
+  { key: 'full_address',       label: 'ที่อยู่เต็ม' },       // M  assembled from all parts
+  { key: 'road',               label: 'ถนน' },              // N
+  { key: 'subdistrict',        label: 'แขวง/ตำบล' },        // O
+  { key: 'district',           label: 'เขต/อำเภอ' },        // P
+  { key: 'province',           label: 'จังหวัด' },           // Q
+  { key: 'postcode',           label: 'รหัสไปรษณีย์' },      // R
+  { key: 'latitude',           label: 'Latitude' },         // S
+  { key: 'longitude',          label: 'Longitude' },        // T
 ]
+
+function buildFullAddress(c: CircuitData): string {
+  const g = (k: string) => c.addressFields.find(f => f.key === k)?.value?.trim() ?? ''
+  const parts: string[] = []
+  if (g('house_no'))    parts.push(g('house_no'))
+  if (g('moo'))         parts.push(`หมู่ ${g('moo')}`)
+  if (g('building'))    parts.push(g('building'))
+  if (g('floor'))       parts.push(`ชั้น ${g('floor')}`)
+  if (g('room'))        parts.push(`ห้อง ${g('room')}`)
+  if (g('soi'))         parts.push(`ซอย ${g('soi')}`)
+  if (g('road'))        parts.push(`ถนน ${g('road')}`)
+  if (g('subdistrict')) parts.push(g('subdistrict'))
+  if (g('district'))    parts.push(g('district'))
+  if (g('province'))    parts.push(g('province'))
+  if (g('postcode'))    parts.push(g('postcode'))
+  return parts.join(' ')
+}
 
 function getExcelCell(c: CircuitData, key: string): { value: string; missing: boolean } {
   if (key === 'status') return { value: c.companyStatus, missing: false }
   if (key === 'combined_address') return { value: c.combinedAddress, missing: false }
+  if (key === 'full_address') return { value: buildFullAddress(c), missing: false }
   const cf = c.customerFields.find(f => f.key === key)
   if (cf) return { value: cf.value, missing: REQUIRED_KEYS.has(key) && !cf.value }
   const af = c.addressFields.find(f => f.key === key)
@@ -774,7 +792,7 @@ function getExcelCell(c: CircuitData, key: string): { value: string; missing: bo
 
 // Address-type columns whose data should be suppressed on non-first circuits within a site
 const ADDR_COLS = new Set([
-  'combined_address', 'house_no', 'soi', 'road',
+  'combined_address', 'full_address', 'house_no', 'road',
   'subdistrict', 'district', 'province', 'postcode', 'latitude', 'longitude',
 ])
 
