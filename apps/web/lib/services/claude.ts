@@ -252,6 +252,24 @@ STEP 3 — VALIDATE (this is where the current system fails — be strict)
 For every significant field add a "fields" entry with: field_name, value, status, ai_note,
 confidence, and corrected_value (the value it SHOULD be, or null).
 
+══════════════════════════════════════════════════════════════════════
+CRITICAL — "value" IS RAW DATA ONLY. NEVER put analysis text in "value".
+══════════════════════════════════════════════════════════════════════
+Each sub-field has exactly one job:
+  • "value"           = the literal string copied from the source, NOTHING ELSE.
+                        No sentences. No "is correct". No "should be". No semicolons.
+                        No Thai commentary. Just the data token (e.g. "10220").
+  • "status"          = one of the five codes below. Not a sentence.
+  • "ai_note"         = ALL reasoning, mismatch explanations, and fix suggestions.
+                        This is the ONLY place analysis text belongs.
+  • "corrected_value" = the corrected data token (e.g. "10500"), or null.
+
+WRONG: {"field_name":"postcode","value":"10220 is correct for คลองเตยเหนือ; district should be คลองเตย","status":"suspicious"}
+RIGHT: {"field_name":"postcode","value":"10220","status":"suspicious","corrected_value":null,"ai_note":"10220 = บางเขน แต่เขตที่ระบุคือ วัฒนา — กรุณาตรวจสอบ"}
+
+The "value" key must be identical to what you would write into the Thai FC form field.
+If you catch yourself writing a space or punctuation after the data token — stop and move it to ai_note.
+
 Status decision table — apply in this exact order:
 1. "missing"    — required field genuinely absent AND not inferable (e.g. only a province is
                   given, so district/subdistrict/postcode cannot be determined).

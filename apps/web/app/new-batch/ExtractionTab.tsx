@@ -762,8 +762,37 @@ const EXCEL_COLS: { key: string; label: string }[] = [
   { key: 'longitude',          label: 'Longitude' },        // T
 ]
 
+// Defensive sanitizer: strips AI analysis text that leaked into a value field.
+// The prompt forbids this, but we guard at export time so a rogue response can
+// never reach a data cell.
+const ANALYSIS_RE = /\bis\s+correct\b|\bshould\s+be\b|\bverify\b|\bควร\b|\bแต่เขต\b|\bแต่จังหวัด\b/i
+
+function sanitizeExcelValue(raw: string, key: string): string {
+  if (!raw) return raw
+
+  // Postcode must be exactly 5 digits — extract the first match if surrounded by text.
+  if (key === 'postcode') {
+    const m = raw.match(/\d{5}/)
+    return m ? m[0] : raw
+  }
+
+  // Any field: if the value contains analysis markers or a semicolon, keep only the
+  // leading token before the first marker/semicolon.
+  if (raw.includes(';') || ANALYSIS_RE.test(raw)) {
+    const cut = raw.split(/;|(?=\s+(?:is\s+correct|should\s+be|verify|ควร|แต่เขต|แต่จังหวัด))/i)[0].trim()
+    return cut || raw
+  }
+
+  // Province / district / subdistrict: cap at 60 chars to catch runaway sentences.
+  if ((key === 'province' || key === 'district' || key === 'subdistrict') && raw.length > 60) {
+    return raw.slice(0, 60).trim()
+  }
+
+  return raw
+}
+
 function buildFullAddress(c: CircuitData): string {
-  const g = (k: string) => c.addressFields.find(f => f.key === k)?.value?.trim() ?? ''
+  const g = (k: string) => sanitizeExcelValue(c.addressFields.find(f => f.key === k)?.value?.trim() ?? '', k)
   const parts: string[] = []
   if (g('house_no'))    parts.push(g('house_no'))
   if (g('moo'))         parts.push(`หมู่ ${g('moo')}`)
@@ -784,9 +813,12 @@ function getExcelCell(c: CircuitData, key: string): { value: string; missing: bo
   if (key === 'combined_address') return { value: c.combinedAddress, missing: false }
   if (key === 'full_address') return { value: buildFullAddress(c), missing: false }
   const cf = c.customerFields.find(f => f.key === key)
-  if (cf) return { value: cf.value, missing: REQUIRED_KEYS.has(key) && !cf.value }
+  if (cf) {
+    const v = sanitizeExcelValue(cf.value, key)
+    return { value: v, missing: REQUIRED_KEYS.has(key) && !v }
+  }
   const af = c.addressFields.find(f => f.key === key)
-  if (af) return { value: af.value, missing: false }
+  if (af) return { value: sanitizeExcelValue(af.value, key), missing: false }
   return { value: '', missing: false }
 }
 
